@@ -1,0 +1,9 @@
+{"sources": [
+ {"id": "fowler", "title": "Survey Research Methods", "author": "Fowler", "year": 2013,
+  "type": "book", "locator": "search: Fowler Survey Research Methods 5th",
+  "authority": 0.95, "what_learner_needs": "Ch 1-3 validity and bias",
+  "freshness_class": "stable"},
+ {"id": "braun-clarke", "title": "Using Thematic Analysis in Psychology",
+  "author": "Braun & Clarke", "year": 2006, "type": "paper",
+  "locator": "doi:10.1191/1478088706qp063oa", "authority": 0.95,
+  "what_learner_needs": "the six-phase method", "freshness_class": "stable"}]}

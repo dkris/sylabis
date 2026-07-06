@@ -1,0 +1,6 @@
+{"topic": "Survey Synthesis for Practitioners", "domain": "non-technical",
+ "target_artifact": "A research brief a stakeholder acts on, with auditable methods appendix",
+ "assumed_knowledge": ["spreadsheets"],
+ "constraints": {"weekly_hours": 5, "hardware": ""},
+ "viability": {"verifiable_skeleton_pct": 72, "grader_mode": "three_tier",
+               "verdict": "proceed", "notes": "Claim audit covers dominant failure modes"}}

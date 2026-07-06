@@ -1,0 +1,6 @@
+{"claims": [
+ {"text": "61% of respondents (n=140) reported satisfaction", "type": "descriptive",
+  "evidence": "n and percentage reported", "result": "pass", "flag": null, "feedback": ""},
+ {"text": "findings cannot be generalized to SMB customers", "type": "descriptive",
+  "evidence": "sample composition", "result": "pass", "flag": null, "feedback": ""}],
+ "summary": {"total": 2, "passed": 2, "failed": 0, "flags": [], "blocking": false}}

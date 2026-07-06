@@ -1,0 +1,15 @@
+{"milestones": [
+ {"id": "00-data-audit", "title": "Research Archaeology", "estimated_hours": 3,
+  "artifact_type": "report", "artifact_spec": "A data-audit.md stating what the data can and cannot claim",
+  "source_ids": ["fowler"], "core_concepts": ["non-response bias", "sampling frame"],
+  "misconception_target": "Describing sample skew is the same as stating a limitation",
+  "depends_on": []},
+ {"id": "01-quant-skeleton", "title": "The Quantitative Skeleton", "estimated_hours": 5,
+  "artifact_type": "report", "artifact_spec": "Frequency tables with n, and a description-only narrative",
+  "source_ids": ["fowler"], "core_concepts": ["description vs interpretation"],
+  "misconception_target": "A percentage is meaningful without its denominator",
+  "depends_on": ["00-data-audit"]}],
+ "sidequests": [
+ {"id": "depth-question-redesign", "type": "depth", "parent": "00-data-audit",
+  "title": "Rewrite the Broken Questions",
+  "hook": "You spotted the survey's flaws — now fix them using Fowler's criteria."}]}
