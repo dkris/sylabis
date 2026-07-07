@@ -14,7 +14,7 @@ import yaml
 from .compiler import compile_course
 from .grader import grade as run_grade
 from .llm import LLM
-from .path_engine import decide
+from .path_engine import decide, actuate
 
 
 def main():
@@ -33,10 +33,15 @@ def main():
     g.add_argument("course_dir")
     g.add_argument("milestone_id")
     g.add_argument("--hours-actual", type=float, default=None)
+    g.add_argument("--skip-tier3", action="store_true",
+                   help="skip exemplar-calibrated Tier 3 scoring")
     g.add_argument("--mock", action="store_true")
 
     n = sub.add_parser("next")
     n.add_argument("course_dir")
+
+    s = sub.add_parser("serve", help="MCP stdio server over a course bundle")
+    s.add_argument("course_dir")
 
     args = p.parse_args()
 
@@ -45,10 +50,16 @@ def main():
                    "prior_knowledge": [s.strip() for s in args.prior.split(",") if s.strip()]}
         compile_course(args.topic, profile, Path(args.out), LLM(mock=args.mock))
 
+    elif args.cmd == "serve":
+        from .mcp_server import MCPServer  # lazy: stdio server pulls no deps
+        MCPServer(Path(args.course_dir)).run()
+
     elif args.cmd == "grade":
         course_dir = Path(args.course_dir)
-        result = run_grade(course_dir, args.milestone_id, LLM(mock=args.mock),
-                           hours_actual=args.hours_actual)
+        llm = LLM(mock=args.mock)
+        result = run_grade(course_dir, args.milestone_id, llm,
+                           hours_actual=args.hours_actual,
+                           skip_tier3=args.skip_tier3)
         print("\n" + result["feedback"])
         manifest = yaml.safe_load((course_dir / "course.yaml").read_text())
         milestone = next(m for m in manifest["milestones"]
@@ -56,6 +67,8 @@ def main():
         decisions = decide(course_dir, milestone, result)
         for d in decisions:
             print(f"\n>> {d['action']}: {d['target']}")
+        for line in actuate(course_dir, decisions, llm=llm):
+            print(f"   {line}")
         sys.exit(0 if result["passed"] else 1)
 
     elif args.cmd == "next":

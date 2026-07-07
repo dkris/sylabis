@@ -1,0 +1,5 @@
+{"probes": [
+ {"concept": "limitation vs description", "verdict": "understood",
+  "evidence": "each boundary rewrite names the population the finding does not extend to and what a stakeholder may not do",
+  "followup_question": ""}],
+ "grade_cap": null}

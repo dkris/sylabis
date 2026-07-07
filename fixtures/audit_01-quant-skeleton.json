@@ -1,0 +1,6 @@
+{"claims": [
+ {"text": "42% of enterprise respondents (n=88) rated onboarding 4 or 5", "type": "descriptive",
+  "evidence": "n and percentage reported per table", "result": "pass", "flag": null, "feedback": ""},
+ {"text": "satisfaction differs by segment (61% enterprise vs 44% SMB, n=88/52)", "type": "comparative",
+  "evidence": "n per group reported; described, not interpreted", "result": "pass", "flag": null, "feedback": ""}],
+ "summary": {"total": 2, "passed": 2, "failed": 0, "flags": [], "blocking": false}}

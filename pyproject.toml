@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coursec"
+version = "0.1.0"
+description = "Course compiler: topic in, OKF course bundle out — lessons, executable grading, knowledge base, MCP server"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml",
+    "python-dotenv",
+    "anthropic",
+    "httpx",
+]
+
+[project.scripts]
+coursec = "coursec.cli:main"
+
+[tool.setuptools]
+packages = ["coursec"]
