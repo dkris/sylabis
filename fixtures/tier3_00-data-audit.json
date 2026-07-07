@@ -1,0 +1,12 @@
+{"dimensions": [
+ {"name": "artifact_fidelity", "score": 0.9,
+  "nearest_exemplar": "strong",
+  "rationale": "All four audit sections present; limitations phrased as implications."},
+ {"name": "non-response bias", "score": 0.85,
+  "nearest_exemplar": "strong",
+  "rationale": "Names where non-response concentrates and what that blocks."},
+ {"name": "sampling frame", "score": 0.8,
+  "nearest_exemplar": "adequate",
+  "rationale": "Frame described; exclusion consequences only partially traced."}],
+ "overall": 0.85,
+ "feedback": "Trace the sampling-frame exclusions one step further: who is systematically absent and which findings inherit that absence. The strong exemplar names two concrete excluded groups."}

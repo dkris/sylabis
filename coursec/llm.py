@@ -7,23 +7,33 @@ it's how you write deterministic tests for a stochastic system.
 import json
 import os
 from pathlib import Path
+from dotenv import load_dotenv; load_dotenv()
 
 MODEL = "claude-sonnet-4-6"
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
 
 class LLM:
-    def __init__(self, mock: bool = False):
+    def __init__(self, mock: bool = False, fixtures_dir: Path | str | None = None):
         self.mock = mock
+        self.fixtures = Path(fixtures_dir) if fixtures_dir else FIXTURES
         if not mock:
             from anthropic import Anthropic
             self.client = Anthropic()  # reads ANTHROPIC_API_KEY from env
 
     def call(self, stage: str, system: str, user: str, max_tokens: int = 4000) -> str:
         if self.mock:
-            fixture = FIXTURES / f"{stage}.json"
+            fixture = self.fixtures / f"{stage}.json"
             if fixture.exists():
-                return fixture.read_text()
+                text = fixture.read_text()
+                # Fixtures holding a bare JSON string (lesson stages) stand in
+                # for raw model markdown — decode them. JSON-object fixtures
+                # return raw text for parse_json, same as a real response.
+                try:
+                    val = json.loads(text)
+                except json.JSONDecodeError:
+                    return text
+                return val if isinstance(val, str) else text
             raise FileNotFoundError(
                 f"Mock mode: no fixture for stage '{stage}' at {fixture}"
             )

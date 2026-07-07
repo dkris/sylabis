@@ -27,10 +27,12 @@ def emit(course_dir: Path, event_type: str, payload: dict) -> None:
 
 # Event types (the future graph edges):
 #   compile.requested   {topic, domain, learner_profile_hash}
-#   compile.completed   {milestone_count, viability_pct, grader_mode}
-#   milestone.started   {milestone_id}
+#   compile.completed   {milestone_count, viability_pct, grader_mode,
+#                        okf_conformant}
+#   milestone.started   {milestone_id}          (emitted by MCP get_lesson)
 #   milestone.graded    {milestone_id, grade, passed, attempt, flags,
 #                        hours_actual, hours_estimated}
 #   path.decision       {signal, action, milestone_id}
-#   sidequest.unlocked  {sidequest_id, trigger}
+#   sidequest.unlocked  {sidequest_id, trigger} (emitted by path actuation)
+#   remedial.injected   {remedial_id, parent_milestone_id, concept}
 #   course.completed    {total_hours, milestones_passed}
