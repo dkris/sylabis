@@ -435,6 +435,47 @@ def test_journey_map_is_okf(tmp):
         "map must link concepts to their evidence"
 
 
+def test_attach_connects_other_repos(tmp):
+    """Cross-repo connection: a course living anywhere joins the journey
+    (path -> symlink, git URL -> clone) and its knowledge counts."""
+    import subprocess
+    home = _journey_home(tmp)
+
+    elsewhere = tmp / "elsewhere" / "survey"
+    with redirect_stdout(io.StringIO()):
+        compile_course("Survey synthesis", {"weekly_hours": 5}, elsewhere,
+                       LLM(mock=True))
+    linked = journey.attach(home, str(elsewhere))
+    assert linked in journey.course_dirs(home)
+
+    repo = tmp / "repo-course"
+    with redirect_stdout(io.StringIO()):
+        compile_course("Survey synthesis", {"weekly_hours": 5}, repo,
+                       LLM(mock=True))
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "course"], cwd=repo, check=True)
+    cloned = journey.attach(home, f"file://{repo}")
+    assert (cloned / "course.yaml").exists() and (cloned / ".git").exists()
+
+    submit(linked, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+    grade_mock(linked, "00-data-audit")
+    submit(cloned, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+    grade_mock(cloned, "00-data-audit")
+    e = next(e for e in journey.knowledge(home)
+             if e["concept"] == "sampling frame")
+    assert len({ev["course"] for ev in e["evidence"]}) == 2, \
+        "knowledge must connect across attached repos"
+
+    try:
+        journey.attach(home, str(tmp))  # not a course bundle
+    except SystemExit as e:
+        assert "course.yaml" in str(e)
+    else:
+        raise AssertionError("attaching a non-course must fail loudly")
+
+
 # -------------------------------------------------------- journey tool surface
 
 def test_tools_walk_the_loop(tmp):
@@ -528,6 +569,69 @@ def test_mcp_serves_both_scopes(tmp):
               ._dispatch("tools/list", {})["tools"]}
     assert {"course_overview", "submit_artifact"} <= cnames, \
         "per-course scope must keep working for existing bundles"
+
+
+# ------------------------------------------------------------ web interface
+
+def test_md_to_html_subset():
+    from coursec.web import md_to_html
+    out = md_to_html("# T\n\n- a\n- **b**\n\n```\n<x>\n```\n\n"
+                     "see [doc](knowledge/index.md) `c`")
+    assert "<h1>T</h1>" in out and "<li><strong>b</strong></li>" in out
+    assert "&lt;x&gt;" in out, "code blocks must be escaped"
+    assert '<a href="knowledge/index.md">doc</a>' in out
+    assert "<code>c</code>" in out
+    assert "<script" not in md_to_html("<script>alert(1)</script>"), \
+        "raw html must never pass through"
+
+
+def test_web_serves_the_loop(tmp):
+    """The standard interface: dashboard, lesson, submit form -> graded
+    feedback, knowledge map with the SVG graph — over real HTTP."""
+    import http.client
+    import threading
+    from urllib.parse import urlencode
+    from coursec.web import make_server
+
+    home = _journey_home(tmp)
+    compile_into(home, "survey")
+    server = make_server(home, port=0, mock=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+
+    def req(method, path, body=None, ctype="application/x-www-form-urlencoded"):
+        conn = http.client.HTTPConnection("127.0.0.1", port)
+        headers = {"Content-Type": ctype} if body else {}
+        conn.request(method, path, body=body, headers=headers)
+        resp = conn.getresponse()
+        return resp.status, resp.read().decode()
+
+    try:
+        status, page = req("GET", "/")
+        assert status == 200 and "Survey Synthesis" in page
+        assert "Open the lesson" in page, "dashboard leads with ONE next action"
+
+        status, page = req("GET", "/course/survey/lesson/00-data-audit")
+        assert status == 200 and "Submit your work" in page
+
+        status, page = req("POST", "/course/survey/submit/00-data-audit",
+                           urlencode({"artifact": STRONG_ARTIFACT,
+                                      "reflection": STRONG_REFLECTION,
+                                      "hours": "2"}))
+        assert status == 200 and "Passed" in page
+
+        status, page = req("GET", "/knowledge")
+        assert status == 200 and "<svg" in page
+        assert "sampling frame" in page, "verified concepts reach the map"
+
+        status, _ = req("GET", "/course/../../etc")
+        assert status == 404
+        status, _ = req("GET", "/course/survey/doc?p=../../secrets.md")
+        assert status == 404, "doc route must refuse traversal"
+        status, page = req("GET", "/course/survey/doc?p=knowledge/index.md")
+        assert status == 200 and "Knowledge base" in page
+    finally:
+        server.shutdown()
 
 
 # ------------------------------------------------------------------ verify.py

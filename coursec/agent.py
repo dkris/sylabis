@@ -40,20 +40,21 @@ class Agent:
                 user = f"(new session — orient first)\n{user}"
                 greeted = True
             messages.append({"role": "user", "content": user})
-            self.turn(messages)
+            print(f"\n{self.turn(messages)}")
 
-    def turn(self, messages: list[dict]) -> None:
+    def turn(self, messages: list[dict]) -> str:
         """One user turn: call the model, run any tools it asks for, feed
-        results back, repeat until it answers in text."""
+        results back, repeat until it answers in text. Returns the reply so
+        any harness (terminal, web) can carry the same conversation."""
+        said = []
         for _ in range(MAX_TOOL_ROUNDS):
             resp = self.llm.chat(GUIDE_SYSTEM, messages, self.specs)
             messages.append({"role": "assistant",
                              "content": [b.model_dump() for b in resp.content]})
-            for block in resp.content:
-                if block.type == "text" and block.text.strip():
-                    print(f"\n{block.text.strip()}")
+            said += [b.text.strip() for b in resp.content
+                     if b.type == "text" and b.text.strip()]
             if resp.stop_reason != "tool_use":
-                return
+                return "\n\n".join(said)
             results = []
             for block in resp.content:
                 if block.type != "tool_use":
@@ -61,7 +62,7 @@ class Agent:
                 print(f"  [{block.name}]", file=sys.stderr)
                 results.append(self._run_tool(block))
             messages.append({"role": "user", "content": results})
-        print("\n(agent stopped — too many tool rounds in one turn)")
+        return "\n\n".join(said + ["(stopped — too many tool rounds in one turn)"])
 
     def _run_tool(self, block) -> dict:
         try:

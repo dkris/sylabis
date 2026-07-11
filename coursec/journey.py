@@ -8,6 +8,8 @@ so it can never disagree with the courses it describes.
 """
 import os
 import re
+import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -43,12 +45,48 @@ def course_dir(home_dir: Path, name: str) -> Path:
 
 def new_course_dir(home_dir: Path, topic: str) -> Path:
     """A fresh directory for a compile: the topic slug, suffixed on collision."""
-    base = course_dir(home_dir, slugify(topic))
+    return _unclaimed(course_dir(home_dir, slugify(topic)))
+
+
+def _unclaimed(base: Path) -> Path:
     out, n = base, 2
-    while out.exists():
+    while out.exists() or out.is_symlink():
         out = base.with_name(f"{base.name}-{n}")
         n += 1
     return out
+
+
+_GIT_PREFIXES = ("http://", "https://", "git@", "ssh://", "file://")
+
+
+def attach(home_dir: Path, source: str) -> Path:
+    """Connect content that lives elsewhere: a git URL clones, a local path
+    symlinks. Either way the course joins the journey under courses/ and
+    its verified knowledge counts like knowledge from any other course —
+    the connection layer does not care which repo a course came from."""
+    root = Path(home_dir) / COURSES_SUBDIR
+    root.mkdir(parents=True, exist_ok=True)
+
+    if source.startswith(_GIT_PREFIXES) or source.endswith(".git"):
+        name = source.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+        dest = _unclaimed(root / (slugify(name) or "course"))
+        proc = subprocess.run(["git", "clone", "--quiet", source, str(dest)],
+                              capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise SystemExit(f"git clone failed: {proc.stderr.strip()}")
+        if not (dest / "course.yaml").exists():
+            shutil.rmtree(dest)
+            raise SystemExit(f"{source} is not a course bundle "
+                             "(no course.yaml at its root)")
+        return dest
+
+    src = Path(source).expanduser().resolve()
+    if not (src / "course.yaml").exists():
+        raise SystemExit(f"{source} is not a course bundle "
+                         "(no course.yaml at its root)")
+    dest = _unclaimed(root / src.name)
+    dest.symlink_to(src, target_is_directory=True)
+    return dest
 
 
 def milestone_passed(cdir: Path, milestone_id: str) -> bool:
@@ -176,6 +214,8 @@ def emit_map(home_dir: Path) -> Path | None:
         lines += ["", "## Connections", ""]
         for e in bridges:
             names = sorted({ev["course_title"] for ev in e["evidence"]})
+            if len(names) < 2:  # identical titles: fall back to dir names
+                names = sorted({ev["course"] for ev in e["evidence"]})
             lines.append(f"- **{e['concept']}** links {' and '.join(names)}")
 
     return okf.write_doc(

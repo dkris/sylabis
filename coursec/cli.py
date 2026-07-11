@@ -4,10 +4,12 @@ coursec — the learning agent.
 The learner surface, in the order you'll use it:
 
   coursec                      talk — the agent drives the whole loop
+  coursec web                  the same journey in your browser
   coursec learn "topic"        start a course in your journey
   coursec next                 what to do now, across every course
   coursec submit               grade the work sitting in your journey
   coursec journey              progress + the knowledge map
+  coursec attach SOURCE        connect a course from another repo or path
   coursec serve [COURSE_DIR]   MCP server (journey-wide without a dir)
 
 No paths, no milestone ids, no flags required: the journey lives in
@@ -63,6 +65,16 @@ def main():
 
     j = sub.add_parser("journey", help="progress + the knowledge map")
     home_flag(j)
+
+    w = sub.add_parser("web", help="the journey in your browser")
+    w.add_argument("--port", type=int, default=8787)
+    w.add_argument("--mock", action="store_true")
+    home_flag(w)
+
+    at = sub.add_parser("attach", help="connect a course that lives in "
+                                       "another repo or directory")
+    at.add_argument("source", help="git URL (clones) or local path (links)")
+    home_flag(at)
 
     s = sub.add_parser("serve", help="MCP stdio server (journey-wide "
                                      "without a course dir)")
@@ -142,6 +154,17 @@ def main():
         path = journey.emit_map(home)
         if path:
             print(f"\nMap written: {path}")
+
+    elif args.cmd == "web":
+        from .web import serve as web_serve  # lazy: pulls http.server
+        web_serve(journey.home(args.home), port=args.port, mock=args.mock)
+
+    elif args.cmd == "attach":
+        home = journey.home(args.home)
+        dest = journey.attach(home, args.source)
+        journey.emit_map(home)
+        print(f"Attached {dest.name!r} to the journey.")
+        _print_step(journey.course_next(dest))
 
     elif args.cmd == "serve":
         from .mcp_server import MCPServer  # lazy: stdio server pulls no deps

@@ -20,16 +20,24 @@ export ANTHROPIC_API_KEY=sk-ant-...    # or put it in .env
 
 ```
 coursec                      # talk — the agent drives the whole loop
+coursec web                  # the same journey in your browser
 coursec learn "topic"        # start a course in your journey
 coursec next                 # what to do now, across every course
 coursec submit               # grade the work sitting in your journey
 coursec journey              # progress + the knowledge map
+coursec attach SOURCE        # connect a course from another repo or path
 ```
 
 No paths, no milestone ids, no flags required. Your journey lives in
 `~/coursec` (override with `$COURSEC_HOME` or `--home`): courses under
 `courses/`, the cross-course knowledge map at `knowledge.md`. `submit`
 finds the milestone whose work is on disk and grades it.
+
+Every learner is different, so the same journey has three doors with
+identical powers: the terminal agent, the browser (`coursec web` — read
+lessons, submit work, get graded feedback, chat with the guide, see the
+knowledge map drawn as a graph; plain HTML, no build step, no CDN), and
+any MCP client. Use whichever feels like home.
 
 The loop, if you prefer the verbs to the conversation:
 
@@ -47,7 +55,14 @@ accumulates them — with evidence: which course, which artifact, what
 grade — and feeds them into every new compile as assumed knowledge, so
 course N+1 builds on what course N proved instead of re-teaching it.
 `coursec journey` renders the map; concepts verified in more than one
-course show up as connections.
+course show up as connections, and `coursec web` draws the whole thing
+as a graph: courses on one side, verified concepts on the other, bridge
+concepts ringed where courses meet.
+
+Courses don't have to live in the journey to join it. `coursec attach`
+connects content from anywhere — a git URL clones the bundle in, a local
+path symlinks it — and its verified knowledge counts like any other's,
+so curricula connect across repositories, not just within one directory.
 
 ## Claude as interface (MCP)
 
@@ -85,9 +100,11 @@ lives in `tests/` (`python -m tests.run_all`).
 coursec/
 ├── agent.py        the harness: a thin tool-use loop; coursec IS this agent
 ├── tools.py        the agent surface — one journey-scoped tool registry
-│                   shared by the interactive agent and the MCP server
-├── journey.py      connected curriculum: courses, verified knowledge,
-│                   next-step and the knowledge map — all read from disk
+│                   shared by the terminal agent, the web app, and MCP
+├── web.py          the standard interface: stdlib web app — lessons,
+│                   submit + grade, guide chat, the knowledge graph
+├── journey.py      connected curriculum: courses (attached from any repo),
+│                   verified knowledge, next-step, the knowledge map
 ├── llm.py          one entry point for all model calls; mock mode
 ├── prompts.py      the pipeline stages ARE these prompts — version them like code
 ├── compiler.py     intake → harvest → sequence → emit → self-test (+ remedials)
@@ -97,7 +114,7 @@ coursec/
 ├── path_engine.py  decide(): legible rules table · actuate(): unlocks + remedials
 ├── events.py       append-only JSONL — the pathway graph seed
 ├── mcp_server.py   MCP stdio server: journey scope or per-course scope
-└── cli.py          talk | learn | next | submit | journey | serve (+ plumbing)
+└── cli.py          talk | web | learn | next | submit | journey | attach | serve
 ```
 
 Design decisions that are deliberate, not shortcuts:
@@ -123,5 +140,7 @@ Design decisions that are deliberate, not shortcuts:
   runs it but ships no reference implementation per milestone yet.
 - The knowledge map connects courses by verified concepts; it does not yet
   suggest what to learn next from the graph (collect first, infer later).
-- Web renderer for bundles not built (P2).
+- The web app is local and single-learner: no auth, bind to 127.0.0.1 only.
+- Attached courses are clones/links; nothing pulls them automatically —
+  `git pull` in the course directory refreshes one.
 - Single-user, local only. That is the point of a prototype.
