@@ -1,13 +1,14 @@
 """
-MCP stdio server over a compiled course bundle. Hand-rolled JSON-RPC 2.0
-(no SDK): newline-delimited UTF-8, one message per line, no Content-Length
-framing. The invariant that keeps the transport alive is that stdout carries
-protocol messages and NOTHING else — every log line and every stray print
-from called code (the compiler narrates to stdout) is redirected to stderr.
+MCP stdio server. Hand-rolled JSON-RPC 2.0 (no SDK): newline-delimited
+UTF-8, one message per line, no Content-Length framing. The invariant that
+keeps the transport alive is that stdout carries protocol messages and
+NOTHING else — every log line and every stray print from called code (the
+compiler narrates to stdout) is redirected to stderr.
 
-The ten tools let a model client walk the learn -> submit -> grade loop:
-read tools expose the OKF bundle as-is; write tools grade an artifact and
-run the path engine, or compile a fresh course into a new directory.
+Two scopes, one transport:
+  serve <course_dir>  — the original per-course tools over one bundle
+  serve               — the journey tools (tools.py), same registry the
+                        interactive agent uses, across every course
 """
 import contextlib
 import json
@@ -18,16 +19,16 @@ from pathlib import Path
 import yaml
 
 from . import events
+from . import journey
 from .llm import LLM
+from .tools import JourneyTools, ToolError
 
 PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 LATEST_PROTOCOL = "2025-11-25"
 
-
-class _ToolError(Exception):
-    """A tool ran but could not complete (missing milestone, grading error).
-    Surfaced as an isError:true result so the model can self-correct rather
-    than a JSON-RPC error that aborts the call."""
+# Surfaced as an isError:true result so the model can self-correct rather
+# than a JSON-RPC error that aborts the call.
+_ToolError = ToolError
 
 
 class _UnknownTool(Exception):
@@ -39,12 +40,16 @@ class _MethodNotFound(Exception):
 
 
 class MCPServer:
-    def __init__(self, course_dir: Path, mock: bool = False):
-        self.course_dir = Path(course_dir)
+    def __init__(self, course_dir: Path | None = None, mock: bool = False,
+                 home_dir: Path | None = None):
+        self.course_dir = Path(course_dir) if course_dir else None
         self.mock = mock
         self._llm_instance = None  # built lazily; read tools need no model
         # name -> (handler, description, inputSchema), insertion order = list order
-        self._tools = self._build_tools()
+        if self.course_dir is None:
+            self._tools = JourneyTools(journey.home(home_dir), mock=mock).registry
+        else:
+            self._tools = self._build_tools()
 
     # ---------------------------------------------------------------- runtime
 

@@ -12,6 +12,7 @@ Document types:
   knowledge-bundle     knowledge/index.md
   competency-evidence  portfolio/claims/<milestone>.md
   portfolio            portfolio/index.md
+  journey              <journey home>/knowledge.md (cross-course, journey.py)
 """
 import time
 from pathlib import Path
@@ -24,7 +25,7 @@ OKF_VERSION = 1
 DESCRIPTION_LIMIT = 120
 
 DOC_TYPES = ("course", "milestone", "source", "knowledge-bundle",
-             "competency-evidence", "portfolio")
+             "competency-evidence", "portfolio", "journey")
 
 
 def _now() -> str:

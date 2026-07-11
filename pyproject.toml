@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "coursec"
 version = "0.1.0"
-description = "Course compiler: topic in, OKF course bundle out — lessons, executable grading, knowledge base, MCP server"
+description = "The learning agent: compiles courses, grades real artifacts, adapts the path, and connects verified knowledge across one journey"
 requires-python = ">=3.10"
 dependencies = [
     "pyyaml",
