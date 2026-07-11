@@ -2,4 +2,4 @@ __pycache__/
 *.pyc
 .env
 /courses/
-.venv/
+.venv/*.egg-info/

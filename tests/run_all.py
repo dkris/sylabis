@@ -23,11 +23,14 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from coursec import journey  # noqa: E402
 from coursec import okf  # noqa: E402
 from coursec.compiler import compile_course, compile_remedial, self_test, _check_dag  # noqa: E402
 from coursec.grader import grade  # noqa: E402
 from coursec.llm import LLM, parse_json  # noqa: E402
+from coursec.mcp_server import MCPServer  # noqa: E402
 from coursec.path_engine import decide, actuate  # noqa: E402
+from coursec.tools import JourneyTools, ToolError  # noqa: E402
 from coursec.verify import resolve_locator, verify_sources  # noqa: E402
 
 FIX = Path(__file__).parent.parent / "fixtures"
@@ -362,6 +365,169 @@ def test_events_schema(tmp):
         assert e["schema"] == 1
         for key in ("id", "ts", "type", "payload"):
             assert key in e, f"event missing {key}"
+
+
+# -------------------------------------------------- journey (connected courses)
+
+def _journey_home(tmp: Path) -> Path:
+    home = tmp / "home"
+    (home / "courses").mkdir(parents=True)
+    return home
+
+
+def compile_into(home: Path, name: str) -> Path:
+    out = home / "courses" / name
+    with redirect_stdout(io.StringIO()):
+        compile_course("Survey synthesis", {"weekly_hours": 5}, out,
+                       LLM(mock=True))
+    return out
+
+
+def test_journey_next_and_submittable(tmp):
+    home = _journey_home(tmp)
+    course = compile_into(home, "survey")
+    step = journey.next_steps(home)[0]
+    assert step["status"] == "ready" and step["milestone_id"] == "00-data-audit"
+    sub = journey.submittable(home)[0]
+    assert sub["status"] == "awaiting_work" and "artifact.md" in sub["missing"]
+    submit(course, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+    sub = journey.submittable(home)[0]
+    assert sub["status"] == "ready" and sub["missing"] == []
+    grade_mock(course, "00-data-audit")
+    assert journey.course_next(course)["milestone_id"] == "01-quant-skeleton"
+
+
+def test_journey_knowledge_connects_courses(tmp):
+    home = _journey_home(tmp)
+    a = compile_into(home, "survey-a")
+    b = compile_into(home, "survey-b")
+    assert journey.prior_knowledge(home) == [], "nothing verified, nothing assumed"
+    submit(a, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+    grade_mock(a, "00-data-audit")
+    know = journey.knowledge(home)
+    concepts = {e["concept"] for e in know}
+    assert {"non-response bias", "sampling frame"} <= concepts
+    ev = next(e for e in know if e["concept"] == "sampling frame")["evidence"][0]
+    assert ev["course"] == "survey-a" and ev["milestone_id"] == "00-data-audit"
+    assert "sampling frame" in journey.prior_knowledge(home), \
+        "verified concepts must feed the next compile"
+    submit(b, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+    grade_mock(b, "00-data-audit")
+    e = next(e for e in journey.knowledge(home)
+             if e["concept"] == "sampling frame")
+    assert {ev["course"] for ev in e["evidence"]} == {"survey-a", "survey-b"}, \
+        "one concept, evidence from both courses"
+
+
+def test_journey_map_is_okf(tmp):
+    home = _journey_home(tmp)
+    course = compile_into(home, "survey")
+    path = journey.emit_map(home)
+    meta, _ = okf.parse_doc(path)
+    assert meta["type"] == "journey" and meta["course_count"] == 1
+    assert meta["concept_count"] == 0
+    submit(course, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+    grade_mock(course, "00-data-audit")
+    journey.emit_map(home)
+    meta, body = okf.parse_doc(home / "knowledge.md")
+    assert meta["concept_count"] == 2
+    assert "portfolio/claims/00-data-audit.md" in body, \
+        "map must link concepts to their evidence"
+
+
+# -------------------------------------------------------- journey tool surface
+
+def test_tools_walk_the_loop(tmp):
+    home = _journey_home(tmp)
+    tools = JourneyTools(home, mock=True)
+    assert "start_course" in tools.call("journey", {}), \
+        "empty journey must point at start_course"
+    with redirect_stdout(io.StringIO()):
+        out = tools.call("start_course", {"topic": "Survey synthesis"})
+    assert "survey-synthesis" in out
+    lesson = tools.call("get_lesson", {"course": "survey-synthesis",
+                                       "milestone_id": "00-data-audit"})
+    assert lesson.strip()
+    assert "milestone.started" in event_types(home / "courses" /
+                                              "survey-synthesis")
+    with redirect_stdout(io.StringIO()):
+        fb = tools.call("submit_work", {
+            "course": "survey-synthesis", "milestone_id": "00-data-audit",
+            "artifact": STRONG_ARTIFACT, "reflection": STRONG_REFLECTION})
+    assert "PASSED" in fb and "Path decisions" in fb
+    assert "non-response bias" in tools.call("knowledge_map", {})
+    assert (home / "knowledge.md").exists(), "submit_work refreshes the map"
+    assert "passed" in tools.call("progress", {"course": "survey-synthesis"})
+
+
+def test_tools_refuse_path_traversal(tmp):
+    tools = JourneyTools(_journey_home(tmp), mock=True)
+    for args in ({"course": "../evil", "milestone_id": "x"},
+                 {"course": "a/b", "milestone_id": "x"},
+                 {"course": "ghost", "milestone_id": "x"}):
+        try:
+            tools.call("get_lesson", args)
+        except ToolError:
+            continue
+        raise AssertionError(f"must refuse {args}")
+
+
+def test_agent_tool_loop(tmp):
+    """The harness plumbing: tool_use -> run tool -> tool_result -> text.
+    The model is a stub; the tools are real (mock LLM underneath)."""
+    from contextlib import redirect_stderr
+    from coursec.agent import Agent
+
+    class _Block:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+        def model_dump(self):
+            return dict(self.__dict__)
+
+    class _StubModel:
+        def __init__(self, replies):
+            self.replies = replies
+
+        def chat(self, system, messages, tools):
+            return self.replies.pop(0)
+
+    class _Resp:
+        def __init__(self, content, stop_reason):
+            self.content, self.stop_reason = content, stop_reason
+
+    replies = [
+        _Resp([_Block(type="tool_use", name="journey", input={}, id="t1")],
+              "tool_use"),
+        _Resp([_Block(type="tool_use", name="get_lesson",
+                      input={"course": "ghost", "milestone_id": "x"},
+                      id="t2")], "tool_use"),
+        _Resp([_Block(type="text", text="Let's begin.")], "end_turn"),
+    ]
+    agent = Agent(_journey_home(tmp), llm=_StubModel(replies))
+    messages = [{"role": "user", "content": "hi"}]
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        agent.turn(messages)
+    assert not replies and len(messages) == 6, "full turn transcript"
+    ok = messages[2]["content"][0]
+    assert ok["type"] == "tool_result" and not ok["is_error"]
+    assert "start_course" in ok["content"], "empty journey orients the model"
+    bad = messages[4]["content"][0]
+    assert bad["is_error"] and "ghost" in bad["content"], \
+        "ToolError becomes a recoverable result, not a crash"
+
+
+def test_mcp_serves_both_scopes(tmp):
+    home = _journey_home(tmp)
+    jnames = {t["name"] for t in
+              MCPServer(None, mock=True, home_dir=home)
+              ._dispatch("tools/list", {})["tools"]}
+    assert {"journey", "start_course", "submit_work"} <= jnames
+    course = compile_mock(tmp)
+    cnames = {t["name"] for t in MCPServer(course, mock=True)
+              ._dispatch("tools/list", {})["tools"]}
+    assert {"course_overview", "submit_artifact"} <= cnames, \
+        "per-course scope must keep working for existing bundles"
 
 
 # ------------------------------------------------------------------ verify.py
