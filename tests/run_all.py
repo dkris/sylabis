@@ -643,6 +643,41 @@ def test_md_to_html_subset():
         "raw html must never pass through"
 
 
+def test_web_first_run_compiles(tmp):
+    """The Reading Room first-run: an empty journey invites a topic, and
+    POST /learn compiles a course into the journey."""
+    import http.client
+    import threading
+    from sylabis.web import make_server
+
+    home = _journey_home(tmp)
+    server = make_server(home, port=0, mock=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+
+    def req(method, path, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", port)
+        conn.request(method, path, body=body,
+                     headers={"Content-Type": "application/json"}
+                     if body else {})
+        resp = conn.getresponse()
+        return resp.status, resp.read().decode()
+
+    try:
+        status, page = req("GET", "/")
+        assert status == 200 and "What do you want to" in page
+        status, out = req("POST", "/learn",
+                          json.dumps({"topic": "Survey synthesis"}))
+        assert status == 200 and json.loads(out) == {"ok": True}
+        assert journey.course_dirs(home), "compile must land in the journey"
+        status, out = req("POST", "/learn", json.dumps({"topic": "  "}))
+        assert status == 400, "an empty topic is refused, not compiled"
+        status, page = req("GET", "/")
+        assert "Open the lesson" in page, "journey replaces first-run"
+    finally:
+        server.shutdown()
+
+
 def test_web_serves_the_loop(tmp):
     """The standard interface: dashboard, lesson, submit form -> graded
     feedback, knowledge map with the SVG graph — over real HTTP."""
@@ -668,6 +703,7 @@ def test_web_serves_the_loop(tmp):
         status, page = req("GET", "/")
         assert status == 200 and "Survey Synthesis" in page
         assert "Open the lesson" in page, "dashboard leads with ONE next action"
+        assert "Ask Sy" in page, "Sy waits behind a tab on every page"
 
         status, page = req("GET", "/course/survey/lesson/00-data-audit")
         assert status == 200 and "Submit your work" in page

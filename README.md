@@ -42,10 +42,14 @@ No paths, no milestone ids, no flags required. Your journey lives in
 finds the milestone whose work is on disk and grades it.
 
 Every learner is different, so the same journey has three doors with
-identical powers: the terminal agent, the browser (`sylabis web` — read
-lessons, submit work, get graded feedback, chat with the guide, see the
-knowledge map drawn as a graph; plain HTML, no build step, no CDN), and
-any MCP client. Use whichever feels like home.
+identical powers: the terminal agent, the browser, and any MCP client.
+Use whichever feels like home. The browser is the sylabis **Reading
+Room** (design concept 1a): a calm single-column editorial surface —
+warm paper, Didot over Georgia with mono labels — where you start a
+course from the page itself, read lessons, submit work, and get the
+grade told tier by tier; Sy waits behind an **Ask Sy** tab and slides in
+as a right dock only when called. Plain HTML, no JS framework, no build
+step; the one webfont degrades to Georgia offline.
 
 The terminal is a real agent CLI, not a readline loop: replies stream in
 as they generate, every tool call renders as a trace line with a result
@@ -120,8 +124,8 @@ sylabis/
 │                   trace lines with ⎿ result previews, spinner, ANSI-safe
 ├── tools.py        the agent surface — one journey-scoped tool registry
 │                   shared by the terminal agent, the web app, and MCP
-├── web.py          the standard interface: stdlib web app — lessons,
-│                   submit + grade, guide chat, the knowledge graph
+├── web.py          the Reading Room: stdlib web app in the sylabis design
+│                   system — compile, lessons, tiered grades, Sy dock, map
 ├── journey.py      connected curriculum: courses (attached from any repo),
 │                   verified knowledge, next-step, the knowledge map
 ├── llm.py          one entry point for all model calls; mock mode
