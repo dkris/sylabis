@@ -16,6 +16,14 @@ pip install -r requirements.txt        # or: pip install -e .
 export ANTHROPIC_API_KEY=sk-ant-...    # or put it in .env
 ```
 
+## Start
+
+```
+cd ~/sandbox/coursec
+source .venv/bin/activate    # if not already active
+coursec                      # talk mode — the agent drives the whole loop
+```
+
 ## The surface
 
 ```
