@@ -422,9 +422,10 @@ class WebApp:
 
     def chat_reply(self, message: str) -> str:
         from .agent import Agent
+        from .console import Console
         with self.lock:
-            if self._agent is None:
-                self._agent = Agent(self.home)
+            if self._agent is None:  # same loop as the terminal, silenced
+                self._agent = Agent(self.home, console=Console(enabled=False))
             if not self._chat:
                 message = f"(new session — orient first)\n{message}"
             self._chat.append({"role": "user", "content": message})

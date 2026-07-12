@@ -513,30 +513,45 @@ def test_tools_refuse_path_traversal(tmp):
         raise AssertionError(f"must refuse {args}")
 
 
+class _Block:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+    def model_dump(self):
+        return dict(self.__dict__)
+
+
+class _Resp:
+    def __init__(self, content, stop_reason):
+        self.content, self.stop_reason = content, stop_reason
+
+
+class _StubModel:
+    """Stands in for LLM.chat; streams text through on_text like the real
+    client so the harness's live path is what gets exercised."""
+
+    def __init__(self, replies):
+        self.replies = replies
+
+    def chat(self, system, messages, tools, on_text=None, **kw):
+        resp = self.replies.pop(0)
+        if on_text is not None:
+            for b in resp.content:
+                if b.type == "text":
+                    on_text(b.text)
+        return resp
+
+
+def _stub_agent(tmp, replies):
+    from coursec.agent import Agent
+    from coursec.console import Console
+    return Agent(_journey_home(tmp), llm=_StubModel(replies),
+                 console=Console(enabled=False))
+
+
 def test_agent_tool_loop(tmp):
     """The harness plumbing: tool_use -> run tool -> tool_result -> text.
     The model is a stub; the tools are real (mock LLM underneath)."""
-    from contextlib import redirect_stderr
-    from coursec.agent import Agent
-
-    class _Block:
-        def __init__(self, **kw):
-            self.__dict__.update(kw)
-
-        def model_dump(self):
-            return dict(self.__dict__)
-
-    class _StubModel:
-        def __init__(self, replies):
-            self.replies = replies
-
-        def chat(self, system, messages, tools):
-            return self.replies.pop(0)
-
-    class _Resp:
-        def __init__(self, content, stop_reason):
-            self.content, self.stop_reason = content, stop_reason
-
     replies = [
         _Resp([_Block(type="tool_use", name="journey", input={}, id="t1")],
               "tool_use"),
@@ -545,17 +560,60 @@ def test_agent_tool_loop(tmp):
                       id="t2")], "tool_use"),
         _Resp([_Block(type="text", text="Let's begin.")], "end_turn"),
     ]
-    agent = Agent(_journey_home(tmp), llm=_StubModel(replies))
+    agent = _stub_agent(tmp, replies)
     messages = [{"role": "user", "content": "hi"}]
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-        agent.turn(messages)
-    assert not replies and len(messages) == 6, "full turn transcript"
+    reply = agent.turn(messages)
+    assert reply == "Let's begin."
+    assert not agent.llm.replies and len(messages) == 6, "full turn transcript"
     ok = messages[2]["content"][0]
     assert ok["type"] == "tool_result" and not ok["is_error"]
     assert "start_course" in ok["content"], "empty journey orients the model"
     bad = messages[4]["content"][0]
     assert bad["is_error"] and "ghost" in bad["content"], \
         "ToolError becomes a recoverable result, not a crash"
+
+
+def test_agent_interrupt_rolls_back_turn(tmp):
+    """Ctrl-C mid-turn must leave the transcript exactly as it was — a
+    dangling tool_use without its result would poison every later call."""
+    class _Boom:
+        def chat(self, *a, **kw):
+            raise KeyboardInterrupt
+
+    replies = [
+        _Resp([_Block(type="tool_use", name="journey", input={}, id="t1")],
+              "tool_use"),
+    ]
+    agent = _stub_agent(tmp, replies)
+    messages = [{"role": "user", "content": "hi"}]
+    # first round returns a tool_use; the second model call gets interrupted
+    real = agent.llm
+
+    class _TwoPhase:
+        def chat(self, *a, **kw):
+            if real.replies:
+                return real.chat(*a, **kw)
+            raise KeyboardInterrupt
+    agent.llm = _TwoPhase()
+    reply = agent.turn(messages)
+    assert reply == "" and messages == [{"role": "user", "content": "hi"}], \
+        "interrupted turn must be rolled back whole"
+
+
+def test_console_trace_previews():
+    from coursec.console import Console, preview_args, preview_result
+    s = preview_args({"artifact": "x" * 500, "course": "survey"})
+    assert "(500 chars)" in s and "x" * 60 not in s, \
+        "long values collapse to a length note"
+    assert 'course: "survey"' in s
+    lines = preview_result("\n".join(f"line {i}" for i in range(12)))
+    assert lines[0] == "line 0" and lines[-1] == "… +8 more lines"
+    assert preview_result("") == ["(empty)"]
+    quiet = Console(enabled=False)
+    quiet.tool_call("journey", {})  # every method must be a silent no-op
+    quiet.text_delta("x")
+    quiet.spinner("thinking")
+    quiet.stop_spinner()
 
 
 def test_mcp_serves_both_scopes(tmp):

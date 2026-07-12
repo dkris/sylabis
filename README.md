@@ -39,6 +39,14 @@ lessons, submit work, get graded feedback, chat with the guide, see the
 knowledge map drawn as a graph; plain HTML, no build step, no CDN), and
 any MCP client. Use whichever feels like home.
 
+The terminal is a real agent CLI, not a readline loop: replies stream in
+as they generate, every tool call renders as a trace line with a result
+preview (`⏺ submit_work(course: "…", …)` / `⎿ Grade: 92% — PASSED`), a
+spinner covers the thinking, Ctrl-C abandons a turn without losing the
+session, and slash commands (`/journey`, `/next`, `/clear`, `/help`)
+answer the mechanical questions locally with no model round-trip.
+Everything degrades to plain text when piped or when `NO_COLOR` is set.
+
 The loop, if you prefer the verbs to the conversation:
 
 ```
@@ -98,7 +106,10 @@ lives in `tests/` (`python -m tests.run_all`).
 
 ```
 coursec/
-├── agent.py        the harness: a thin tool-use loop; coursec IS this agent
+├── agent.py        the harness: one streaming tool-use loop; coursec IS
+│                   this agent (terminal live, web silent — same loop)
+├── console.py      the terminal experience: streamed prose, ⏺ tool-call
+│                   trace lines with ⎿ result previews, spinner, ANSI-safe
 ├── tools.py        the agent surface — one journey-scoped tool registry
 │                   shared by the terminal agent, the web app, and MCP
 ├── web.py          the standard interface: stdlib web app — lessons,
