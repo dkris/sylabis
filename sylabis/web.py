@@ -1,13 +1,17 @@
 """
-The standard interface. Not every learner lives in a terminal: `sylabis
-web` serves the whole journey in the browser — courses, lessons, a submit
-form, grading feedback, a chat with the guide, and a visual knowledge map.
-It is the third harness over the same journey tools the terminal agent and
-the MCP server use, so every interface has exactly the same powers.
+The standard interface — sylabis "Reading Room" (design concept 1a).
+A calm, single-column editorial surface: warm paper, Didot display over
+Georgia body with mono labels, the aka/matcha/coral brand palette. The
+reading column carries lessons, grading, and the knowledge map; Sy waits
+behind an "Ask Sy" tab and slides in as a right dock only when called.
+Reading comes first; the agent stays quiet until asked.
 
+It is the third harness over the same journey tools the terminal agent
+and the MCP server use, so every interface has exactly the same powers.
 Deliberately dependency-free: stdlib http.server, hand-rolled markdown
-subset, server-rendered SVG for the map. No CDN, no JS framework — the
-page a learner opens on a train still works.
+subset, server-rendered SVG for the map. No JS framework, no build step;
+the one webfont (GFS Didot, per the design system) degrades to Georgia
+when offline.
 """
 import html
 import json
@@ -23,59 +27,175 @@ import yaml
 from . import journey
 from .tools import JourneyTools, ToolError, _safe_id
 
-# Chart chrome + categorical series colors follow the validated reference
-# palette (dataviz method): both modes are selected steps, not an automatic
-# flip, and series color marks identity only — text always wears ink tokens.
+# sylabis design tokens (design-system project, tokens/*.css) — editorial,
+# single-mode: ink lives on paper, color marks identity and action only.
 _CSS = """
-:root{--page:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;
---muted:#898781;--line:#e1e0d9;--border:rgba(11,11,11,.10);--good:#006300;
---s1:#2a78d6;--s2:#1baf7a;--s3:#eda100;--s4:#008300;--s5:#4a3aa7;
---s6:#e34948;--s7:#e87ba4;--s8:#eb6834}
-@media (prefers-color-scheme:dark){:root{--page:#0d0d0d;--surface:#1a1a19;
---ink:#fff;--ink2:#c3c2b7;--line:#2c2c2a;--border:rgba(255,255,255,.10);
---good:#0ca30c;--s1:#3987e5;--s2:#199e70;--s3:#c98500;--s5:#9085e9;
---s6:#e66767;--s7:#d55181;--s8:#d95926}}
+@import url('https://fonts.googleapis.com/css2?family=GFS+Didot&display=swap');
+:root{
+--shiro:#FFFFFF;--paper:#F9F9F7;--surface:#FCFCFB;--sumi:#1A1A1A;
+--ink-2:#52514E;--muted:#898781;--line:#E8E8E4;--line-soft:#F0F0EC;
+--aka:#E03D28;--aka-press:#C4321F;--coral:#F2907E;--coral-tint:#FFF3F2;
+--matcha:#2D5A30;--matcha-tint:#EDFAEE;
+--series-1:#E03D28;--series-2:#2D5A30;--series-3:#C98A2E;--series-4:#2A6F97;
+--series-5:#7A4E8C;--series-6:#B5482F;--series-7:#5C7A3F;--series-8:#C25B7C;
+--font-display:'GFS Didot','Didot','Georgia',serif;
+--font-body:'Georgia','Times New Roman',serif;
+--font-mono:'Courier New','Courier',ui-monospace,Menlo,monospace;
+--radius-xs:2px;--radius-sm:4px;--radius-md:6px;
+--ease:cubic-bezier(.2,0,.2,1)}
 *{box-sizing:border-box}
-body{margin:0;background:var(--page);color:var(--ink);
-font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:860px;margin:0 auto;padding:1.2rem 1rem 4rem}
-a{color:var(--s1)}
-nav{display:flex;gap:1rem;align-items:baseline;padding:.4rem 0;
-border-bottom:1px solid var(--line);margin-bottom:1.2rem;flex-wrap:wrap}
-nav .brand{font-weight:700;color:var(--ink);text-decoration:none}
-h1{font-size:1.5rem}h2{font-size:1.15rem;margin-top:2rem}
-.card{background:var(--surface);border:1px solid var(--border);
-border-radius:10px;padding:1rem 1.2rem;margin:.8rem 0}
-.hero{border-left:4px solid var(--s1)}
-.chip{display:inline-block;width:.75em;height:.75em;border-radius:50%;
-margin-right:.45em;vertical-align:baseline}
-.muted{color:var(--muted)}.ok{color:var(--good);font-weight:600}
-.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;
-margin:.5rem 0}
-.bar span{display:block;height:100%;background:var(--s1);border-radius:4px}
-pre{background:var(--surface);border:1px solid var(--border);
-border-radius:8px;padding:.8rem 1rem;overflow-x:auto}
-code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em}
-label{display:block;font-weight:600;margin:1rem 0 .3rem}
-textarea,input[type=number]{width:100%;padding:.6rem;border-radius:8px;
-border:1px solid var(--line);background:var(--surface);color:var(--ink);
-font:inherit}
-textarea{min-height:10rem}
-button{margin-top:1rem;padding:.55rem 1.3rem;border-radius:8px;border:0;
-background:var(--s1);color:#fff;font:inherit;font-weight:600;cursor:pointer}
-figure{margin:1rem 0;overflow-x:auto}
-#chatlog{max-height:20rem;overflow-y:auto}
-#chatlog p{white-space:pre-wrap;margin:.5rem 0}
-#chatlog .you{color:var(--ink2)}
-table{border-collapse:collapse}td,th{padding:.3rem .8rem .3rem 0;
-text-align:left;vertical-align:top}
+html,body{margin:0}
+body{background:var(--paper);color:var(--sumi);
+font:400 15px/1.65 var(--font-body)}
+a{color:var(--aka);text-decoration:none}
+a:hover{opacity:.75}
+@keyframes syRise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes syPulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+.topnav{height:58px;display:flex;align-items:center;gap:26px;padding:0 40px;
+border-bottom:1px solid var(--line);background:var(--paper)}
+.wordmark{font-family:var(--font-display);font-size:23px;color:var(--sumi);
+margin-right:auto}
+.wordmark b{color:var(--aka);font-weight:400}
+.navlink{font-family:var(--font-mono);font-size:11px;letter-spacing:.12em;
+text-transform:uppercase;color:var(--ink-2)}
+main{max-width:680px;margin:0 auto;padding:44px 40px 90px;
+animation:syRise .3s var(--ease)}
+
+.eyebrow{font-family:var(--font-mono);font-size:11px;letter-spacing:.2em;
+text-transform:uppercase;color:var(--matcha);margin:0 0 12px}
+.eyebrow.hot{color:var(--aka)}
+.eyebrow.quiet{color:var(--muted)}
+h1{font-family:var(--font-display);font-weight:400;font-size:32px;
+line-height:1.2;margin:0 0 16px}
+h1.hero-h,h2.hero-h{font-size:44px;line-height:1.12}
+h2{font-family:var(--font-display);font-weight:400;font-size:22px;
+margin:34px 0 9px}
+h3,h4{font-family:var(--font-display);font-weight:400;font-size:19px;
+margin:22px 0 7px}
+p{margin:0 0 14px;color:var(--ink-2)}
+.lead{font-size:18px;line-height:1.6}
+.quiet{color:var(--muted)}
+em{color:var(--aka)}
+li{color:var(--ink-2);margin-bottom:5px}
+pre{background:var(--shiro);border:1px solid var(--line);
+border-radius:var(--radius-md);padding:12px 14px;overflow-x:auto;
+font-family:var(--font-mono);font-size:12.5px;line-height:1.6}
+code{font-family:var(--font-mono);font-size:.92em}
+table{border-collapse:collapse}
+td,th{padding:.3rem .9rem .3rem 0;text-align:left;vertical-align:top}
+
+.card{background:var(--surface);border:1px solid var(--line);
+border-radius:var(--radius-md);padding:16px 20px;margin:0 0 12px}
+.card.next{border-left:4px solid var(--aka);padding:20px 22px;margin:0 0 26px}
+.card .title{font-family:var(--font-display);font-size:19px;color:var(--sumi)}
+.card.next .title{font-size:24px;display:block;margin-bottom:5px}
+.mini{font-family:var(--font-mono);font-size:10px;letter-spacing:.16em;
+text-transform:uppercase;color:var(--aka);margin:0 0 9px}
+.mini.ok{color:var(--matcha)}
+.mini.quiet{color:var(--muted)}
+.meta{font-family:var(--font-mono);font-size:10px;letter-spacing:.05em;
+color:var(--muted)}
+.chip{display:inline-block;width:11px;height:11px;border-radius:50%;
+margin-right:9px;vertical-align:baseline}
+.bar{display:block;height:8px;background:var(--line);border-radius:4px;
+overflow:hidden;margin:11px 0 9px}
+.bar span{display:block;height:100%;border-radius:4px}
+.rowline{display:flex;align-items:baseline;justify-content:space-between;
+border-top:1px solid var(--line);padding-top:18px;margin-top:26px}
+
+.btn{display:inline-block;padding:11px 22px;border:0;
+border-radius:var(--radius-xs);background:var(--aka);color:#fff;
+font-family:var(--font-mono);font-size:11px;letter-spacing:.15em;
+text-transform:uppercase;cursor:pointer}
+.btn:hover{background:var(--aka-press);opacity:1}
+.btn.outline{background:transparent;border:1px solid var(--aka);
+color:var(--aka)}
+.btn.ghost{background:transparent;color:var(--ink-2)}
+.linkbtn{font-family:var(--font-mono);font-size:11px;letter-spacing:.12em;
+text-transform:uppercase;color:var(--aka)}
+
+label{display:block;font-weight:700;font-size:15px;margin:0 0 6px}
+textarea,input[type=text],input[type=number]{width:100%;padding:11px 13px;
+border:1px solid var(--line);border-radius:var(--radius-md);
+background:var(--surface);color:var(--sumi);font-family:var(--font-body);
+font-size:15px;outline:none}
+textarea{min-height:120px;resize:vertical;margin-bottom:16px}
+textarea:focus,input:focus{border-color:var(--aka)}
+
+.capsule{background:var(--paper);border:1px solid var(--line);
+border-radius:var(--radius-md);padding:16px 18px;margin:0 0 26px}
+.capsule .body{font-size:15px;line-height:1.6;color:var(--sumi)}
+.tag{display:inline-block;font-family:var(--font-mono);font-size:10px;
+letter-spacing:.1em;text-transform:uppercase;padding:3px 9px;
+border-radius:var(--radius-xs)}
+.tag.pass{background:var(--matcha-tint);color:var(--matcha)}
+.tag.fail{background:var(--coral-tint);color:var(--aka)}
+.signal{border-radius:var(--radius-md);padding:18px 20px;margin:0 0 16px}
+.signal.up{background:var(--matcha-tint);border:1px solid var(--matcha)}
+.signal.flat{background:var(--coral-tint);border:1px solid var(--coral)}
+.signal .title{font-family:var(--font-display);font-size:20px;
+color:var(--sumi);margin-bottom:5px}
+.concept-tag{display:inline-block;font-family:var(--font-mono);font-size:11px;
+letter-spacing:.06em;padding:5px 11px;border:1px solid var(--matcha);
+border-radius:var(--radius-xs);color:var(--matcha);margin:0 8px 8px 0}
+.suggest{appearance:none;padding:7px 13px;background:var(--surface);
+border:1px solid var(--line);border-radius:20px;font-family:var(--font-body);
+font-size:13px;color:var(--ink-2);cursor:pointer}
+.points{border-top:1px solid var(--line);padding-top:24px;display:grid;
+grid-template-columns:1fr 1fr 1fr;gap:22px;margin-top:40px}
+.points .k{font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;
+text-transform:uppercase;color:var(--matcha);margin-bottom:8px}
+.points .v{font-size:14px;line-height:1.5;color:var(--ink-2)}
+.stage{display:flex;gap:16px;padding:16px 0;border-top:1px solid var(--line)}
+.stage .mark{flex:none;width:22px;text-align:center;color:var(--aka);
+animation:syPulse 1.4s infinite}
+.stage .lbl{font-family:var(--font-mono);font-size:11px;letter-spacing:.13em;
+text-transform:uppercase;color:var(--muted);margin-bottom:4px}
+details{margin:0 0 26px}
+summary{font-family:var(--font-mono);font-size:11px;letter-spacing:.12em;
+text-transform:uppercase;color:var(--muted);cursor:pointer}
+
+.sy-launch{position:fixed;right:0;top:96px;z-index:5;appearance:none;
+cursor:pointer;background:var(--sumi);color:#fff;border:0;
+border-radius:8px 0 0 8px;padding:14px 9px;writing-mode:vertical-rl;
+transform:rotate(180deg);font-family:var(--font-mono);font-size:10px;
+letter-spacing:.2em;text-transform:uppercase}
+.sy-dock{position:fixed;top:0;right:0;bottom:0;width:352px;z-index:6;
+background:var(--surface);border-left:1px solid var(--line);
+box-shadow:-8px 0 30px rgba(26,26,26,.08);display:flex;
+flex-direction:column;transform:translateX(100%);
+transition:transform .18s var(--ease)}
+.sy-dock.open{transform:none}
+.sy-head{flex:none;display:flex;align-items:center;gap:10px;
+padding:16px 18px;border-bottom:1px solid var(--line)}
+.sy-head .dot{width:9px;height:9px;border-radius:50%;
+background:var(--matcha)}
+.sy-head .name{font-family:var(--font-display);font-size:17px}
+.sy-head .sub{font-family:var(--font-mono);font-size:9px;
+letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.sy-head button{appearance:none;background:none;border:0;cursor:pointer;
+font-size:18px;color:var(--muted);line-height:1;margin-left:auto}
+.sy-log{flex:1;overflow-y:auto;padding:18px}
+.sy-log .who{font-family:var(--font-mono);font-size:9px;
+letter-spacing:.12em;text-transform:uppercase;margin-bottom:5px}
+.sy-log .who.sy{color:var(--matcha)}
+.sy-log .who.you{color:var(--muted)}
+.sy-log .msg{font-size:14px;line-height:1.6;white-space:pre-wrap;
+margin-bottom:16px}
+.sy-foot{flex:none;border-top:1px solid var(--line);padding:14px}
+.sy-foot textarea{min-height:52px;background:var(--paper);font-size:14px;
+resize:none;margin-bottom:10px}
+.sy-foot .btn{width:100%;padding:10px;font-size:10px}
+@media (max-width:760px){.points{grid-template-columns:1fr}
+.topnav{padding:0 20px}main{padding:32px 20px 70px}}
 """
 
 
 def series(i: int) -> str:
     """Categorical slot for course i — fixed order, never cycled; courses
-    beyond the 8 validated slots fold into muted (identity via label)."""
-    return f"var(--s{i + 1})" if i < 8 else "var(--muted)"
+    beyond the 8 brand slots fold into muted (identity via label)."""
+    return f"var(--series-{i + 1})" if i < 8 else "var(--muted)"
 
 
 # ------------------------------------------------------------- markdown
@@ -157,8 +277,8 @@ def md_to_html(md: str, link_fn=None) -> str:
 def knowledge_svg(steps: list[dict], know: list[dict]) -> str:
     """The knowledge map as a bipartite graph: courses on the left, verified
     concepts on the right, an edge per piece of evidence in the course's
-    color. Concepts proven in more than one course (the connections) get a
-    ring and a bold label — identity never rides on color alone."""
+    series color. Concepts proven in more than one course (the connections)
+    get a sumi ring and a bold label — identity never rides on color alone."""
     courses = [s["course"] for s in steps]
     if not courses or not know:
         return ""
@@ -171,8 +291,9 @@ def knowledge_svg(steps: list[dict], know: list[dict]) -> str:
         return [20 + (i + 0.5) * (height - 40) / n for i in range(n)]
 
     cy, ky = ys(len(courses)), ys(len(know))
-    parts = [f'<svg viewBox="0 0 {width} {height}" width="{width}" '
-             f'height="{height}" role="img" '
+    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" '
+             f'style="max-width:{width}px;font-family:var(--font-body)" '
+             f'role="img" '
              f'aria-label="Knowledge map: courses and verified concepts">']
     for j, e in enumerate(know):
         for ev in e["evidence"]:
@@ -183,7 +304,7 @@ def knowledge_svg(steps: list[dict], know: list[dict]) -> str:
             parts.append(
                 f'<path d="M {xc} {cy[i]:.1f} C {xc + 90} {cy[i]:.1f}, '
                 f'{xk - 90} {ky[j]:.1f}, {xk} {ky[j]:.1f}" fill="none" '
-                f'stroke="{series(i)}" stroke-width="2" opacity=".75">'
+                f'stroke="{series(i)}" stroke-width="2" opacity=".65">'
                 f'<title>{html.escape(e["concept"])} — '
                 f'{html.escape(ev["course_title"])} ({grade})</title></path>')
     for i, s in enumerate(steps):
@@ -191,19 +312,20 @@ def knowledge_svg(steps: list[dict], know: list[dict]) -> str:
             f'<circle cx="{xc}" cy="{cy[i]:.1f}" r="7" fill="{series(i)}">'
             f'<title>{html.escape(s["course_title"])}</title></circle>'
             f'<text x="{xc - 14}" y="{cy[i]:.1f}" text-anchor="end" '
-            f'dominant-baseline="middle" fill="var(--ink2)" font-size="13">'
+            f'dominant-baseline="middle" fill="var(--ink-2)" font-size="13">'
             f'{html.escape(_clip(s["course_title"], 26))}</text>')
     for j, e in enumerate(know):
         bridge = len({ev["course"] for ev in e["evidence"]}) > 1
-        ring = (' stroke="var(--ink)" stroke-width="2"' if bridge else "")
-        weight = ' font-weight="600"' if bridge else ""
+        ring = (' stroke="var(--sumi)" stroke-width="2"' if bridge
+                else ' stroke="var(--muted)"')
+        weight = ' font-weight="700"' if bridge else ""
         parts.append(
             f'<circle cx="{xk}" cy="{ky[j]:.1f}" r="7" '
-            f'fill="var(--surface)" stroke="var(--muted)"{ring}>'
+            f'fill="var(--surface)"{ring}>'
             f'<title>{html.escape(e["concept"])}'
             f'{" — links courses" if bridge else ""}</title></circle>'
             f'<text x="{xk + 14}" y="{ky[j]:.1f}" dominant-baseline="middle" '
-            f'fill="var(--ink)" font-size="13"{weight}>'
+            f'fill="var(--sumi)" font-size="13"{weight}>'
             f'{html.escape(_clip(e["concept"], 38))}</text>')
     parts.append("</svg>")
     return "".join(parts)
@@ -229,11 +351,11 @@ class WebApp:
         self.home = Path(home_dir)
         self.mock = mock
         self.tools = JourneyTools(self.home, mock=mock)
-        self.lock = threading.Lock()  # grading and chat are one-at-a-time
+        self.lock = threading.Lock()  # compiling, grading, chat: one at a time
         self._agent = None
         self._chat: list[dict] = []
 
-    # ------------------------------------------------------------- pages
+    # ------------------------------------------------------------- shell
 
     def page(self, title: str, body: str) -> str:
         return (f'<!DOCTYPE html><html lang="en"><head>'
@@ -241,33 +363,102 @@ class WebApp:
                 f'<meta name="viewport" content="width=device-width,'
                 f'initial-scale=1">'
                 f"<title>{html.escape(title)} — sylabis</title>"
-                f"<style>{_CSS}</style></head><body><main>"
-                f'<nav><a class="brand" href="/">sylabis</a>'
-                f'<a href="/">journey</a>'
-                f'<a href="/knowledge">knowledge</a></nav>'
-                f"{body}</main></body></html>")
+                f"<style>{_CSS}</style></head><body>"
+                f'<nav class="topnav">'
+                f'<a class="wordmark" href="/">sylabis<b>.</b></a>'
+                f'<a class="navlink" href="/">journey</a>'
+                f'<a class="navlink" href="/knowledge">knowledge</a></nav>'
+                f"<main>{body}</main>{self._sy_dock()}</body></html>")
+
+    def _sy_dock(self) -> str:
+        """Sy behind a tab, per the Reading Room: present on every page,
+        on screen only when called."""
+        if self.chat_enabled():
+            foot = ('<form id="syform"><label for="symsg" '
+                    'style="display:none">Your message</label>'
+                    '<textarea id="symsg" '
+                    'placeholder="Ask about the milestone…"></textarea>'
+                    '<button class="btn">Send</button></form>')
+            first = ("Ask about the milestone, the source, or where to go "
+                     "next. I won't write your artifact — that's yours.")
+        else:
+            foot = ""
+            first = ("Sy needs ANTHROPIC_API_KEY on the server to talk. "
+                     "The rest of the room works without it.")
+        return f"""
+<button class="sy-launch" id="sylaunch" aria-expanded="false"
+ aria-controls="sydock">Ask Sy</button>
+<aside class="sy-dock" id="sydock" aria-label="Sy, your guide">
+  <div class="sy-head"><span class="dot"></span>
+    <div><div class="name">Sy</div>
+    <div class="sub">your guide · here when called</div></div>
+    <button id="syclose" aria-label="Close">×</button></div>
+  <div class="sy-log" id="sylog" aria-live="polite">
+    <div><div class="who sy">Sy</div>
+    <div class="msg">{html.escape(first)}</div></div></div>
+  <div class="sy-foot">{foot}</div>
+</aside>
+<script>
+const dock=document.getElementById('sydock'),
+      launch=document.getElementById('sylaunch');
+function syToggle(open){{dock.classList.toggle('open',open);
+launch.setAttribute('aria-expanded',dock.classList.contains('open'));}}
+launch.addEventListener('click',()=>syToggle());
+document.getElementById('syclose').addEventListener('click',()=>syToggle(false));
+const form=document.getElementById('syform');
+if(form){{
+  const log=document.getElementById('sylog'),
+        box=document.getElementById('symsg');
+  form.addEventListener('submit',async e=>{{
+    e.preventDefault();
+    const t=box.value.trim(); if(!t)return;
+    add('you','You',t); box.value=''; box.disabled=true;
+    try{{
+      const r=await fetch('/chat',{{method:'POST',
+        headers:{{'Content-Type':'application/json'}},
+        body:JSON.stringify({{message:t}})}});
+      const d=await r.json();
+      add('sy','Sy',d.reply||d.error||'(no reply)');
+    }}catch(_){{add('sy','Sy','(connection lost — is the server running?)')}}
+    box.disabled=false; box.focus();
+  }});
+  function add(cls,who,text){{
+    const d=document.createElement('div');
+    const w=document.createElement('div');
+    w.className='who '+cls; w.textContent=who;
+    const m=document.createElement('div');
+    m.className='msg'; m.textContent=text;
+    d.append(w,m); log.appendChild(d); log.scrollTop=log.scrollHeight;
+  }}
+}}
+</script>"""
+
+    # ------------------------------------------------------------- pages
 
     def dashboard(self) -> str:
         steps = journey.next_steps(self.home)
         if not steps:
-            return self.page("Your journey", (
-                "<h1>Welcome</h1><div class='card hero'><p>Nothing here yet."
-                " Start a course from the terminal —</p>"
-                "<pre><code>sylabis learn \"a topic you want to learn\""
-                "</code></pre>"
-                "<p>— or ask the guide below.</p></div>" + self._chat_html()))
+            return self.page("A new journey", self._first_run())
         know = journey.knowledge(self.home)
-        body = ["<h1>Your journey</h1>"]
+        n = len(steps)
+        count_word = {1: "One course", 2: "Two courses",
+                      3: "Three courses"}.get(n, f"{n} courses")
+        body = ['<p class="eyebrow">Your journey</p>',
+                f'<h1>{count_word}, <em>one</em> map</h1>' if n > 1 else
+                f'<h1>{count_word}, <em>one</em> path</h1>']
         ready = [s for s in steps if s["status"] == "ready"]
         if ready:
             s = ready[0]
             body.append(
-                f'<div class="card hero"><strong>Next:</strong> '
-                f'{html.escape(s["title"])} '
-                f'<span class="muted">(~{s["estimated_hours"]}h, '
-                f'{html.escape(s["course_title"])})</span><br>'
-                f'<a href="/course/{s["course"]}/lesson/{s["milestone_id"]}">'
-                f"Open the lesson →</a></div>")
+                f'<div class="card next">'
+                f'<p class="mini">Next — the one thing to do</p>'
+                f'<span class="title">{html.escape(s["title"])}</span>'
+                f'<p style="font-size:14px;margin-bottom:16px">'
+                f'~{s["estimated_hours"]}h · '
+                f'{html.escape(s["course_title"])} · milestone '
+                f'{html.escape(s["milestone_id"])}</p>'
+                f'<a class="btn" href="/course/{s["course"]}/lesson/'
+                f'{s["milestone_id"]}">Open the lesson</a></div>')
         for i, s in enumerate(steps):
             cdir = journey.course_dir(self.home, s["course"])
             manifest = yaml.safe_load((cdir / "course.yaml").read_text())
@@ -276,37 +467,138 @@ class WebApp:
                          for m in manifest["milestones"])
             pct = round(100 * passed / total) if total else 0
             if s["status"] == "complete":
-                status = '<span class="ok">✓ complete</span>'
+                status = "complete — every milestone passed"
             elif s["status"] == "blocked":
-                status = (f'<span class="muted">blocked on '
-                          f'{html.escape(", ".join(s["blocked_on"]))}</span>')
+                status = ("blocked on "
+                          + html.escape(", ".join(s["blocked_on"])))
             else:
                 status = (f'next: {html.escape(s["milestone_id"])} — '
                           f'{html.escape(s["title"])}')
             body.append(
-                f'<div class="card"><span class="chip" '
-                f'style="background:{series(i)}"></span>'
-                f'<a href="/course/{s["course"]}">'
-                f'<strong>{html.escape(s["course_title"])}</strong></a> '
-                f'<span class="muted">{passed}/{total} milestones</span>'
-                f'<div class="bar" role="progressbar" aria-valuenow="{pct}" '
-                f'aria-valuemin="0" aria-valuemax="100"><span '
-                f'style="width:{pct}%"></span></div>{status}</div>')
-        body.append(f"<h2>Knowledge</h2><p>{len(know)} verified "
-                    f'concepts. <a href="/knowledge">See the map →</a></p>')
-        body.append(self._chat_html())
+                f'<a class="card" style="display:block" '
+                f'href="/course/{s["course"]}">'
+                f'<span style="display:flex;align-items:baseline;gap:0">'
+                f'<span class="chip" style="background:{series(i)}"></span>'
+                f'<span class="title">{html.escape(s["course_title"])}'
+                f'</span><span class="meta" style="margin-left:auto">'
+                f'{passed} / {total} milestones</span></span>'
+                f'<span class="bar" role="progressbar" aria-valuenow="{pct}"'
+                f' aria-valuemin="0" aria-valuemax="100"><span '
+                f'style="width:{pct}%;background:{series(i)}"></span></span>'
+                f'<span style="font-size:14px;color:var(--ink-2)">{status}'
+                f"</span></a>")
+        bridges = sum(1 for e in know
+                      if len({ev["course"] for ev in e["evidence"]}) > 1)
+        bridge_note = (f" · {bridges} bridge{'s' if bridges != 1 else ''} "
+                       f"between courses" if bridges else "")
+        body.append(
+            f'<div class="rowline"><div>'
+            f'<div style="font-family:var(--font-display);font-size:19px">'
+            f"Knowledge</div>"
+            f'<div style="font-size:14px;color:var(--ink-2)">{len(know)} '
+            f"verified concept{'s' if len(know) != 1 else ''}{bridge_note}"
+            f"</div></div>"
+            f'<a class="linkbtn" href="/knowledge">See the map →</a></div>')
         return self.page("Your journey", "".join(body))
+
+    def _first_run(self) -> str:
+        points = [
+            ("Artifact gravity", "Every milestone ends in something you "
+             "build — never “understand X.”"),
+            ("Real grading", "A three-tier grader probes the artifact. "
+             "Finishing leaves a portfolio."),
+            ("One map", "What you prove in one course is assumed in the "
+             "next. Curricula connect."),
+        ]
+        points_html = "".join(
+            f'<div><div class="k">{k}</div><div class="v">{v}</div></div>'
+            for k, v in points)
+        stages = [
+            ("Intake", "Reading your topic. Naming the concrete artifact "
+             "you'll end with."),
+            ("Source harvest", "Finding the primary sources a course should "
+             "compile from. Verifying every locator."),
+            ("Sequencing", "Ordering milestones so theory lands at most one "
+             "step before you use it."),
+            ("Lesson writing", "Writing each lesson from its sources — "
+             "context, do-steps, artifact spec."),
+            ("Self-test", "Checking the course isn't broken before you ever "
+             "see it."),
+        ]
+        stages_html = "".join(
+            f'<div class="stage"><div class="mark">●</div><div>'
+            f'<div class="lbl">{k}</div>'
+            f'<div style="font-size:15px;color:var(--ink-2)">{v}</div>'
+            f"</div></div>" for k, v in stages)
+        return f"""
+<div id="firstrun">
+<p class="eyebrow">A new journey</p>
+<h1 class="hero-h">What do you want to <em>learn</em>?</h1>
+<p class="lead" style="max-width:560px">Name it in a sentence. sylabis
+compiles a course from primary sources, teaches it milestone by milestone,
+and grades the real thing you build. The work is yours; the rest is the
+agent's.</p>
+<form id="learnform" style="display:flex;gap:10px;align-items:stretch;
+margin:30px 0 16px">
+<label for="topic" style="display:none">Topic</label>
+<input type="text" id="topic" name="topic" style="flex:1;font-size:16px;
+padding:14px 16px"
+ placeholder="e.g. distill a small coding model for my MacBook M4" required>
+<button class="btn" style="flex:none">Compile it</button></form>
+<div class="points">{points_html}</div>
+</div>
+<div id="compiling" style="display:none">
+<p class="eyebrow hot" style="animation:syPulse 1.4s infinite">Compiling ·
+about a minute</p>
+<h1 id="ctopic"></h1>
+<p class="quiet">The compiler is working through these stages now — this
+page will move on by itself when the course is ready.</p>
+{stages_html}
+<p class="quiet" id="cerror" style="color:var(--aka);margin-top:20px"></p>
+</div>
+<script>
+const lf=document.getElementById('learnform');
+lf.addEventListener('submit',async e=>{{
+  e.preventDefault();
+  const topic=document.getElementById('topic').value.trim();
+  if(!topic)return;
+  document.getElementById('firstrun').style.display='none';
+  document.getElementById('ctopic').textContent=topic;
+  document.getElementById('compiling').style.display='block';
+  try{{
+    const r=await fetch('/learn',{{method:'POST',
+      headers:{{'Content-Type':'application/json'}},
+      body:JSON.stringify({{topic}})}});
+    const d=await r.json();
+    if(d.ok){{location.href='/';return;}}
+    document.getElementById('cerror').textContent=d.error||'Compile failed.';
+  }}catch(_){{
+    document.getElementById('cerror').textContent=
+      'Lost the server mid-compile — check the terminal.';
+  }}
+}});
+</script>"""
+
+    def learn(self, payload: dict) -> dict:
+        topic = (payload.get("topic") or "").strip()
+        if not topic:
+            raise ToolError("Say what you want to learn first.")
+        with self.lock:
+            self.tools.call("start_course", {"topic": topic})
+        return {"ok": True}
 
     def knowledge_page(self) -> str:
         steps = journey.next_steps(self.home)
         know = journey.knowledge(self.home)
-        body = ["<h1>Knowledge map</h1>"]
+        body = ['<p class="eyebrow">Connected curriculum</p>',
+                "<h1>Knowledge map</h1>"]
         svg = knowledge_svg(steps, know)
         if not svg:
-            body.append("<p class='muted'>Nothing verified yet — pass a "
+            body.append('<p class="quiet">Nothing verified yet — pass a '
                         "milestone and the map begins.</p>")
         else:
-            body.append(f"<figure>{svg}</figure>")
+            body.append(f'<div class="card" style="padding:18px 16px">'
+                        f"{svg}</div>")
             body.append("<h2>Verified concepts</h2><table>")
             for e in know:
                 refs = "<br>".join(
@@ -320,65 +612,102 @@ class WebApp:
             bridges = [e for e in know
                        if len({ev["course"] for ev in e["evidence"]}) > 1]
             if bridges:
-                body.append("<h2>Connections</h2><ul>")
+                body.append("<h2>Connections</h2>"
+                            "<p>Concepts proven in more than one course. "
+                            "These are what let the next course build on "
+                            "what the last one proved, instead of "
+                            "re-teaching it.</p><ul>")
                 for e in bridges:
-                    body.append(f"<li><strong>{html.escape(e['concept'])}"
-                                f"</strong> links "
-                                f"{html.escape(' and '.join(_bridge_names(e)))}"
-                                f"</li>")
+                    names = " and ".join(
+                        f"<em>{html.escape(nm)}</em>"
+                        for nm in _bridge_names(e))
+                    body.append(f"<li style='color:var(--sumi)'><strong>"
+                                f"{html.escape(e['concept'])}</strong> "
+                                f"links {names}</li>")
                 body.append("</ul>")
         return self.page("Knowledge map", "".join(body))
 
     def course_page(self, name: str) -> str:
         cdir = self._cdir(name)
         manifest = yaml.safe_load((cdir / "course.yaml").read_text())
-        body = [f"<h1>{html.escape(manifest['meta']['title'])}</h1>"]
+        body = ['<a class="navlink quiet" href="/" style="font-size:10px">'
+                "← journey</a>",
+                f'<h1 style="margin-top:16px">'
+                f"{html.escape(manifest['meta']['title'])}</h1>"]
         target = manifest.get("learner", {}).get("target_artifact", "")
         if target:
-            body.append(f"<p class='muted'>{html.escape(target)}</p>")
-        body.append("<h2>Milestones</h2>")
+            body.append(f'<p class="lead">{html.escape(target)}</p>')
         for m in manifest["milestones"]:
             gpath = cdir / m["id"] / "grade.yaml"
             if journey.milestone_passed(cdir, m["id"]):
                 g = yaml.safe_load(gpath.read_text()) or {}
-                status = (f'<span class="ok">✓ passed '
-                          f'({g.get("grade", 0):.0%})</span>')
+                status = (f'<span class="tag pass">✓ passed · '
+                          f'{g.get("grade", 0):.0%}</span>')
             elif gpath.exists():
                 g = yaml.safe_load(gpath.read_text()) or {}
-                status = f'attempt {g.get("attempt", 1)} — not yet'
+                status = (f'<span class="tag fail">attempt '
+                          f'{g.get("attempt", 1)} · not yet</span>')
             else:
-                status = '<span class="muted">not started</span>'
+                status = '<span class="meta">not started</span>'
             body.append(
-                f'<div class="card">'
-                f'<a href="/course/{name}/lesson/{m["id"]}">'
-                f'<strong>{html.escape(m["id"])} — {html.escape(m["title"])}'
-                f'</strong></a> <span class="muted">'
-                f'(~{m["estimated_hours"]}h)</span><br>{status}</div>')
-        body.append(f'<p><a href="/course/{name}/doc?p=knowledge/index.md">'
-                    f"Sources</a> · "
-                    f'<a href="/course/{name}/doc?p=portfolio/index.md">'
-                    f"Portfolio</a></p>")
+                f'<a class="card" style="display:block" '
+                f'href="/course/{name}/lesson/{m["id"]}">'
+                f'<span style="display:flex;align-items:baseline;gap:10px">'
+                f'<span class="title">{html.escape(m["id"])} — '
+                f'{html.escape(m["title"])}</span>'
+                f'<span class="meta" style="margin-left:auto;flex:none">'
+                f'~{m["estimated_hours"]}h</span></span>'
+                f'<span style="display:block;margin-top:8px">{status}'
+                f"</span></a>")
+        body.append(
+            f'<div class="rowline">'
+            f'<a class="linkbtn" href="/course/{name}/doc?p=knowledge/'
+            f'index.md">Sources</a>'
+            f'<a class="linkbtn" href="/course/{name}/doc?p=portfolio/'
+            f'index.md">Portfolio</a></div>')
         return self.page(manifest["meta"]["title"], "".join(body))
 
     def lesson_page(self, name: str, mid: str) -> str:
+        cdir = self._cdir(name)
         lesson = self.tools.call("get_lesson",
                                  {"course": name, "milestone_id": mid})
         _, body_md = _split_frontmatter(lesson)
-        form = (
-            f"<h2>Submit your work</h2>"
-            f"<p class='muted'>Your own words — the grader probes "
-            f"understanding, not polish.</p>"
-            f'<form method="post" action="/course/{name}/submit/{mid}">'
-            f'<label for="artifact">Artifact</label>'
-            f'<textarea id="artifact" name="artifact" required></textarea>'
-            f'<label for="reflection">Reflection</label>'
-            f'<textarea id="reflection" name="reflection" required>'
-            f"</textarea>"
-            f'<label for="hours">Hours spent (optional)</label>'
-            f'<input id="hours" name="hours" type="number" step="0.5" '
-            f'min="0">'
-            f"<button>Grade it</button></form>")
-        return self.page(mid, md_to_html(body_md, self._linker(name, mid))
+        cp_path = cdir / mid / "checkpoint.yaml"
+        cp = yaml.safe_load(cp_path.read_text()) if cp_path.exists() else {}
+        manifest = yaml.safe_load((cdir / "course.yaml").read_text())
+        m = next((x for x in manifest["milestones"] if x["id"] == mid), {})
+
+        head = [f'<a class="navlink quiet" href="/course/{name}" '
+                'style="font-size:10px">← course</a>',
+                f'<p class="eyebrow" style="margin-top:16px;'
+                f'letter-spacing:.1em">{html.escape(mid)} · '
+                f'~{m.get("estimated_hours", "?")}h</p>']
+        if cp.get("artifact_spec"):
+            head.append(
+                f'<div class="capsule"><p class="mini ok">The artifact</p>'
+                f'<div class="body">{html.escape(cp["artifact_spec"])}'
+                f"</div></div>")
+        reflection_hint = "Your reflection, in your own words."
+        if cp.get("misconception_target"):
+            reflection_hint = ("Target the misconception: "
+                               + cp["misconception_target"])
+        form = f"""
+<h2>Submit your work</h2>
+<p class="quiet" style="font-size:14px">Your own words — the grader probes
+understanding, not polish.</p>
+<form method="post" action="/course/{name}/submit/{mid}">
+<label for="artifact">Artifact</label>
+<textarea id="artifact" name="artifact" required
+ placeholder="Paste your artifact…"></textarea>
+<label for="reflection">Reflection</label>
+<textarea id="reflection" name="reflection" required style="min-height:90px"
+ placeholder="{html.escape(reflection_hint, quote=True)}"></textarea>
+<label for="hours">Hours spent (optional)</label>
+<input id="hours" name="hours" type="number" step="0.5" min="0"
+ style="margin-bottom:18px">
+<button class="btn" style="padding:13px 28px">Grade it</button></form>"""
+        return self.page(mid, "".join(head)
+                         + md_to_html(body_md, self._linker(name, mid))
                          + form)
 
     def submit(self, name: str, mid: str, form: dict) -> str:
@@ -390,15 +719,137 @@ class WebApp:
             args["hours_actual"] = float(hours)
         with self.lock:
             feedback = self.tools.call("submit_work", args)
-        passed = "PASSED" in feedback.splitlines()[0]
-        headline = ('<span class="ok">✓ Passed.</span>' if passed
-                    else "Not yet — that's a path signal, not a verdict.")
-        return self.page(
-            f"Graded — {mid}",
-            f"<h1>{headline}</h1><pre>{html.escape(feedback)}</pre>"
-            f'<p><a href="/course/{name}/lesson/{mid}">Back to the lesson'
-            f"</a> · <a href='/'>Journey</a> · "
-            f"<a href='/knowledge'>Knowledge map</a></p>")
+        cdir = self._cdir(name)
+        gy = yaml.safe_load((cdir / mid / "grade.yaml").read_text()) or {}
+        cp = yaml.safe_load((cdir / mid / "checkpoint.yaml").read_text()) or {}
+        passed = bool(gy.get("passed"))
+        grade_pct = f"{gy.get('grade', 0):.0%}"
+
+        if passed:
+            head = (f'<div style="display:flex;align-items:flex-end;'
+                    f'gap:14px;margin-bottom:6px">'
+                    f'<h1 class="hero-h" style="color:var(--matcha);'
+                    f'margin:0;line-height:1">✓ Passed</h1>'
+                    f'<span style="font-family:var(--font-mono);'
+                    f'font-size:22px;padding-bottom:5px">{grade_pct}</span>'
+                    f"</div><p style='font-size:16px'>Verified and on the "
+                    f"map. The claim, the artifact, and the grade travel "
+                    f"together now.</p>")
+        else:
+            head = (f'<div style="display:flex;align-items:flex-end;'
+                    f'gap:14px;margin-bottom:6px">'
+                    f'<h1 class="hero-h" style="color:var(--aka);margin:0;'
+                    f'line-height:1">Not yet</h1>'
+                    f'<span style="font-family:var(--font-mono);'
+                    f'font-size:22px;padding-bottom:5px">{grade_pct}</span>'
+                    f"</div><p style='font-size:16px'>A path signal, not a "
+                    f"verdict — the tiers below say exactly what to fix.</p>")
+
+        cards = "".join(self._tier_cards(gy))
+        signal = self._path_signal(feedback)
+        chips = ""
+        if passed and cp.get("core_concepts"):
+            chips = ('<div style="margin:0 0 26px">'
+                     '<span class="mini quiet" style="margin-right:10px;'
+                     'display:inline-block">Now verified</span>'
+                     + "".join(f'<span class="concept-tag">+ '
+                               f"{html.escape(c)}</span>"
+                               for c in cp["core_concepts"]) + "</div>")
+        actions = (
+            f'<div style="display:flex;gap:12px;border-top:1px solid '
+            f'var(--line);padding-top:20px">'
+            f'<a class="btn outline" href="/">Back to journey</a>'
+            + (f'<a class="btn ghost" href="/knowledge">See it on the map '
+               f"→</a>" if passed else
+               f'<a class="btn ghost" href="/course/{name}/lesson/{mid}">'
+               f"Back to the lesson</a>")
+            + "</div>")
+        raw = (f"<details><summary>Full grader output</summary>"
+               f"<pre>{html.escape(feedback)}</pre></details>")
+        return self.page(f"Graded — {mid}",
+                         head + cards + signal + chips + raw + actions)
+
+    def _tier_cards(self, gy: dict) -> list[str]:
+        """The grade, told the way the grader actually works: tier by tier,
+        from the structured grade.yaml the grader just wrote."""
+        def card(label: str, ok: bool, verdict: str, detail: str) -> str:
+            return (f'<div class="card"><span style="display:flex;'
+                    f'align-items:baseline;gap:10px;margin-bottom:5px">'
+                    f'<span style="font-family:var(--font-mono);'
+                    f'font-size:11px;letter-spacing:.13em;'
+                    f'text-transform:uppercase">{label}</span>'
+                    f'<span class="tag {"pass" if ok else "fail"}" '
+                    f'style="margin-left:auto">{html.escape(verdict)}</span>'
+                    f'</span><div style="font-size:14px;line-height:1.55;'
+                    f'color:var(--ink-2)">{html.escape(detail)}</div></div>')
+
+        cards = []
+        t1 = bool(gy.get("tier_1_passed"))
+        missing = [f.split(":", 1)[1] for f in gy.get("failure_flags", [])
+                   if f.startswith("missing_file:")]
+        cards.append(card("Tier 1 — structural", t1,
+                          "pass" if t1 else "fail",
+                          "Required files present and readable."
+                          if t1 else "Missing: " + ", ".join(missing)))
+        if not t1:
+            return cards
+        audit = gy.get("claim_audit")
+        if audit:
+            ok = bool(gy.get("tier_2_passed"))
+            flags = audit.get("flags", [])
+            verdict = "pass" if ok else "fail"
+            if ok and flags:
+                verdict = f"pass · {len(flags)} flag{'s' if len(flags) != 1 else ''}"
+            cards.append(card(
+                "Tier 2 — claim audit", ok, verdict,
+                f"{audit.get('passed', 0)} of {audit.get('total', 0)} claims "
+                f"matched their evidence."
+                + (f" Flags: {', '.join(flags)}." if flags else "")))
+            if not ok:
+                return cards
+        mode = gy.get("tier_3_mode")
+        if mode == "rubric_scripts":
+            notes = "; ".join(gy.get("rubric_scripts", []))
+            cards.append(card("Tier 3 — rubric scripts", True, "ran",
+                              notes or "Executable rubric scored the artifact."))
+        elif mode == "exemplar_rubric":
+            t3 = gy.get("tier_3", {})
+            cards.append(card("Tier 3 — exemplar rubric", True,
+                              f"{t3.get('overall', 0):.0%}",
+                              t3.get("feedback", "")))
+        for p in gy.get("explain_back", []):
+            ok = p.get("verdict") == "understood"
+            detail = (p.get("followup_question")
+                      or "Names the boundary before we could ask about it.")
+            cards.append(card(f"Explain-back — {p.get('concept', '')[:40]}",
+                              ok, p.get("verdict", ""), detail))
+        return cards
+
+    def _path_signal(self, feedback: str) -> str:
+        """Path decisions from the grader's own narration, rendered as the
+        Reading Room's signal capsule."""
+        lines = [l.strip() for l in feedback.splitlines()]
+        unlocked = next((l for l in lines
+                         if l.startswith("unlocked sidequest")), None)
+        remedial = next((l for l in lines
+                         if l.startswith("injected remedial")), None)
+        if unlocked:
+            title = unlocked.split("—", 1)[-1].strip() or unlocked
+            return (f'<div class="signal up"><p class="mini ok">↑ Path '
+                    f"signal — sidequest unlocked</p>"
+                    f'<div class="title">{html.escape(title)}</div>'
+                    f'<div style="font-size:14px;color:var(--ink-2)">You '
+                    f"beat the bar with room to spare, so the path opened "
+                    f"a depth sidequest. Take it now or let it wait — it "
+                    f"stays on your journey either way.</div></div>")
+        if remedial:
+            return (f'<div class="signal flat"><p class="mini">→ Path '
+                    f"signal — remedial injected</p>"
+                    f'<div class="title">A short detour first</div>'
+                    f'<div style="font-size:14px;color:var(--ink-2)">'
+                    f"{html.escape(remedial)}. It appears before this "
+                    f"milestone and unblocks it.</div></div>")
+        return ""
 
     def doc_page(self, name: str, rel: str) -> str:
         cdir = self._cdir(name)
@@ -408,11 +859,15 @@ class WebApp:
                 not path.exists():
             raise ToolError(f"No document {rel!r} in this course.")
         text = path.read_text()
+        back = (f'<a class="navlink quiet" href="/course/{name}" '
+                'style="font-size:10px">← course</a>')
         if path.suffix != ".md":
-            return self.page(rel, f"<h1>{html.escape(rel)}</h1>"
+            return self.page(rel, f"{back}<h1 style='margin-top:16px'>"
+                                  f"{html.escape(rel)}</h1>"
                                   f"<pre>{html.escape(text)}</pre>")
         _, body_md = _split_frontmatter(text)
-        return self.page(rel, md_to_html(body_md, self._linker(name, rel)))
+        return self.page(rel, back + md_to_html(body_md,
+                                                self._linker(name, rel)))
 
     # -------------------------------------------------------------- chat
 
@@ -430,40 +885,6 @@ class WebApp:
                 message = f"(new session — orient first)\n{message}"
             self._chat.append({"role": "user", "content": message})
             return self._agent.turn(self._chat)
-
-    def _chat_html(self) -> str:
-        if not self.chat_enabled():
-            return ""
-        return """
-<h2>Ask the guide</h2>
-<div class="card"><div id="chatlog" aria-live="polite"></div>
-<form id="chatform"><label for="chatmsg">Your message</label>
-<textarea id="chatmsg" rows="2"></textarea>
-<button>Send</button></form></div>
-<script>
-const log=document.getElementById('chatlog'),
-      form=document.getElementById('chatform'),
-      box=document.getElementById('chatmsg');
-form.addEventListener('submit',async e=>{
-  e.preventDefault();
-  const msg=box.value.trim(); if(!msg) return;
-  add('you',msg); box.value=''; box.disabled=true;
-  try{
-    const r=await fetch('/chat',{method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({message:msg})});
-    const d=await r.json();
-    add('guide',d.reply||d.error||'(no reply)');
-  }catch(err){add('guide','(connection lost — is the server running?)')}
-  box.disabled=false; box.focus();
-});
-function add(who,text){
-  const p=document.createElement('p');
-  p.className=who==='you'?'you':'';
-  p.textContent=(who==='you'?'you: ':'')+text;
-  log.appendChild(p); log.scrollTop=log.scrollHeight;
-}
-</script>"""
 
     # ------------------------------------------------------------ helpers
 
@@ -507,6 +928,7 @@ _ROUTES = [
     ("POST", re.compile(r"^/course/([A-Za-z0-9._-]+)/submit/"
                         r"([A-Za-z0-9._-]+)$"), "submit"),
     ("GET", re.compile(r"^/course/([A-Za-z0-9._-]+)/doc$"), "doc_page"),
+    ("POST", re.compile(r"^/learn$"), "learn"),
     ("POST", re.compile(r"^/chat$"), "chat"),
 ]
 
@@ -531,6 +953,9 @@ class _Handler(BaseHTTPRequestHandler):
                 if action == "submit":
                     form = parse_qs(self._body().decode())
                     return self._html(app.submit(*m.groups(), form))
+                if action == "learn":
+                    payload = json.loads(self._body() or b"{}")
+                    return self._json(200, app.learn(payload))
                 if action == "chat":
                     if not app.chat_enabled():
                         return self._json(503, {"error": "chat needs "
@@ -542,11 +967,15 @@ class _Handler(BaseHTTPRequestHandler):
                     return self._html(app.doc_page(m.group(1), rel))
                 return self._html(getattr(app, action)(*m.groups()))
             except ToolError as e:
+                if action == "learn":
+                    return self._json(400, {"error": str(e)})
                 return self._html(app.page("Not found",
                                            f"<h1>Hmm.</h1><p>{html.escape(str(e))}"
                                            f"</p><p><a href='/'>Journey</a></p>"),
                                   status=404)
             except Exception as e:  # a page bug should render, not hang
+                if action == "learn":
+                    return self._json(500, {"error": str(e)})
                 return self._html(app.page("Error",
                                            f"<h1>Something broke.</h1>"
                                            f"<pre>{html.escape(str(e))}</pre>"),
@@ -591,10 +1020,9 @@ def serve(home_dir: Path, port: int = 8787, mock: bool = False) -> None:
     server = make_server(home_dir, port=port, mock=mock)
     host, actual_port = server.server_address[:2]
     url = f"http://{host}:{actual_port}/"
-    print(f"sylabis web — your journey at {url}  (Ctrl-C to stop)")
+    print(f"sylabis — your reading room at {url}  (Ctrl-C to stop)")
     if not server.app.chat_enabled():  # type: ignore[attr-defined]
-        print("  (chat with the guide is off — set ANTHROPIC_API_KEY "
-              "to turn it on)")
+        print("  (Sy is off — set ANTHROPIC_API_KEY to turn the guide on)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
