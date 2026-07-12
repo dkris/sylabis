@@ -1,5 +1,5 @@
 """
-The agent harness. `coursec` with no arguments lands here: a conversation
+The agent harness. `sylabis` with no arguments lands here: a conversation
 in the terminal where the model drives the whole learn → submit → grade →
 adapt loop through the journey tools. The harness is deliberately thin —
 a read line, a tool-use loop, a printed reply. Everything that matters
@@ -24,7 +24,7 @@ class Agent:
                       for n, (_, d, s) in self.tools.registry.items()]
 
     def run(self) -> None:
-        print("coursec — your learning journey. Empty line or Ctrl-D to leave.")
+        print("sylabis — your learning journey. Empty line or Ctrl-D to leave.")
         messages: list[dict] = []
         greeted = False
         while True:

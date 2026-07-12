@@ -23,15 +23,15 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from coursec import journey  # noqa: E402
-from coursec import okf  # noqa: E402
-from coursec.compiler import compile_course, compile_remedial, self_test, _check_dag  # noqa: E402
-from coursec.grader import grade  # noqa: E402
-from coursec.llm import LLM, parse_json  # noqa: E402
-from coursec.mcp_server import MCPServer  # noqa: E402
-from coursec.path_engine import decide, actuate  # noqa: E402
-from coursec.tools import JourneyTools, ToolError  # noqa: E402
-from coursec.verify import resolve_locator, verify_sources  # noqa: E402
+from sylabis import journey  # noqa: E402
+from sylabis import okf  # noqa: E402
+from sylabis.compiler import compile_course, compile_remedial, self_test, _check_dag  # noqa: E402
+from sylabis.grader import grade  # noqa: E402
+from sylabis.llm import LLM, parse_json  # noqa: E402
+from sylabis.mcp_server import MCPServer  # noqa: E402
+from sylabis.path_engine import decide, actuate  # noqa: E402
+from sylabis.tools import JourneyTools, ToolError  # noqa: E402
+from sylabis.verify import resolve_locator, verify_sources  # noqa: E402
 
 FIX = Path(__file__).parent.parent / "fixtures"
 
@@ -517,7 +517,7 @@ def test_agent_tool_loop(tmp):
     """The harness plumbing: tool_use -> run tool -> tool_result -> text.
     The model is a stub; the tools are real (mock LLM underneath)."""
     from contextlib import redirect_stderr
-    from coursec.agent import Agent
+    from sylabis.agent import Agent
 
     class _Block:
         def __init__(self, **kw):
@@ -574,7 +574,7 @@ def test_mcp_serves_both_scopes(tmp):
 # ------------------------------------------------------------ web interface
 
 def test_md_to_html_subset():
-    from coursec.web import md_to_html
+    from sylabis.web import md_to_html
     out = md_to_html("# T\n\n- a\n- **b**\n\n```\n<x>\n```\n\n"
                      "see [doc](knowledge/index.md) `c`")
     assert "<h1>T</h1>" in out and "<li><strong>b</strong></li>" in out
@@ -591,7 +591,7 @@ def test_web_serves_the_loop(tmp):
     import http.client
     import threading
     from urllib.parse import urlencode
-    from coursec.web import make_server
+    from sylabis.web import make_server
 
     home = _journey_home(tmp)
     compile_into(home, "survey")

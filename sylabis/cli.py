@@ -1,19 +1,19 @@
 """
-coursec — the learning agent.
+sylabis — the learning agent.
 
 The learner surface, in the order you'll use it:
 
-  coursec                      talk — the agent drives the whole loop
-  coursec web                  the same journey in your browser
-  coursec learn "topic"        start a course in your journey
-  coursec next                 what to do now, across every course
-  coursec submit               grade the work sitting in your journey
-  coursec journey              progress + the knowledge map
-  coursec attach SOURCE        connect a course from another repo or path
-  coursec serve [COURSE_DIR]   MCP server (journey-wide without a dir)
+  sylabis                      talk — the agent drives the whole loop
+  sylabis web                  the same journey in your browser
+  sylabis learn "topic"        start a course in your journey
+  sylabis next                 what to do now, across every course
+  sylabis submit               grade the work sitting in your journey
+  sylabis journey              progress + the knowledge map
+  sylabis attach SOURCE        connect a course from another repo or path
+  sylabis serve [COURSE_DIR]   MCP server (journey-wide without a dir)
 
 No paths, no milestone ids, no flags required: the journey lives in
-$COURSEC_HOME (default ~/coursec) and submit finds the milestone whose
+$SYLABIS_HOME (default ~/sylabis) and submit finds the milestone whose
 work is on disk. `compile` and `grade` remain as plumbing for scripts
 and the bundled GitHub workflow.
 """
@@ -33,13 +33,13 @@ from .path_engine import decide, actuate
 
 def main():
     p = argparse.ArgumentParser(
-        prog="coursec",
+        prog="sylabis",
         description="The learning agent. Run with no arguments to talk.")
     sub = p.add_subparsers(dest="cmd")
 
     def home_flag(sp):
         sp.add_argument("--home", default=None,
-                        help="journey directory (default $COURSEC_HOME or ~/coursec)")
+                        help="journey directory (default $SYLABIS_HOME or ~/sylabis)")
 
     l = sub.add_parser("learn", help="start a course in your journey")
     l.add_argument("topic")
@@ -102,8 +102,8 @@ def main():
 
     if args.cmd is None:
         if not os.environ.get("ANTHROPIC_API_KEY"):
-            sys.exit("coursec talks through Claude: set ANTHROPIC_API_KEY "
-                     "(or put it in .env), then run `coursec` again.")
+            sys.exit("sylabis talks through Claude: set ANTHROPIC_API_KEY "
+                     "(or put it in .env), then run `sylabis` again.")
         from .agent import Agent  # lazy: the SDK client only for talking
         Agent(journey.home()).run()
 
@@ -119,7 +119,7 @@ def main():
         compile_course(args.topic, profile, out, LLM(mock=args.mock))
         journey.emit_map(home)
         step = journey.course_next(out)
-        print(f"\nStart here: coursec next  →  {step['milestone_id']} — "
+        print(f"\nStart here: sylabis next  →  {step['milestone_id']} — "
               f"{step['title']}")
 
     elif args.cmd == "next":
@@ -129,7 +129,7 @@ def main():
             return
         steps = journey.next_steps(journey.home(args.home))
         if not steps:
-            print('Nothing here yet. Start with: coursec learn "a topic"')
+            print('Nothing here yet. Start with: sylabis learn "a topic"')
             return
         for step in steps:
             _print_step(step)
@@ -141,7 +141,7 @@ def main():
         home = journey.home(args.home)
         steps = journey.next_steps(home)
         if not steps:
-            print('Nothing here yet. Start with: coursec learn "a topic"')
+            print('Nothing here yet. Start with: sylabis learn "a topic"')
             return
         for step in steps:
             _print_step(step)
@@ -215,12 +215,12 @@ def _submit(args) -> None:
                 print(f"{c['course']}/{c['milestone_id']}: waiting on "
                       f"{', '.join(c['missing'])}")
         else:
-            print("Nothing ready to grade. See: coursec next")
+            print("Nothing ready to grade. See: sylabis next")
         sys.exit(1)
     if len(ready) > 1:
         print("Several milestones are ready — pick one:")
         for c in ready:
-            print(f"  coursec submit {c['milestone_id']}   ({c['course']})")
+            print(f"  sylabis submit {c['milestone_id']}   ({c['course']})")
         sys.exit(1)
     step = ready[0]
     cdir = journey.course_dir(home, step["course"])
