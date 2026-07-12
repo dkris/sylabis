@@ -1,5 +1,5 @@
 """
-The standard interface. Not every learner lives in a terminal: `coursec
+The standard interface. Not every learner lives in a terminal: `sylabis
 web` serves the whole journey in the browser — courses, lessons, a submit
 form, grading feedback, a chat with the guide, and a visual knowledge map.
 It is the third harness over the same journey tools the terminal agent and
@@ -240,9 +240,9 @@ class WebApp:
                 f'<meta charset="utf-8">'
                 f'<meta name="viewport" content="width=device-width,'
                 f'initial-scale=1">'
-                f"<title>{html.escape(title)} — coursec</title>"
+                f"<title>{html.escape(title)} — sylabis</title>"
                 f"<style>{_CSS}</style></head><body><main>"
-                f'<nav><a class="brand" href="/">coursec</a>'
+                f'<nav><a class="brand" href="/">sylabis</a>'
                 f'<a href="/">journey</a>'
                 f'<a href="/knowledge">knowledge</a></nav>'
                 f"{body}</main></body></html>")
@@ -253,7 +253,7 @@ class WebApp:
             return self.page("Your journey", (
                 "<h1>Welcome</h1><div class='card hero'><p>Nothing here yet."
                 " Start a course from the terminal —</p>"
-                "<pre><code>coursec learn \"a topic you want to learn\""
+                "<pre><code>sylabis learn \"a topic you want to learn\""
                 "</code></pre>"
                 "<p>— or ask the guide below.</p></div>" + self._chat_html()))
         know = journey.knowledge(self.home)
@@ -512,7 +512,7 @@ _ROUTES = [
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server_version = "coursec"
+    server_version = "sylabis"
 
     def do_GET(self):
         self._route("GET")
@@ -576,7 +576,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):  # quiet: one line per request on stderr
         import sys
-        print(f"[coursec.web] {self.address_string()} {fmt % args}",
+        print(f"[sylabis.web] {self.address_string()} {fmt % args}",
               file=sys.stderr)
 
 
@@ -591,7 +591,7 @@ def serve(home_dir: Path, port: int = 8787, mock: bool = False) -> None:
     server = make_server(home_dir, port=port, mock=mock)
     host, actual_port = server.server_address[:2]
     url = f"http://{host}:{actual_port}/"
-    print(f"coursec web — your journey at {url}  (Ctrl-C to stop)")
+    print(f"sylabis web — your journey at {url}  (Ctrl-C to stop)")
     if not server.app.chat_enabled():  # type: ignore[attr-defined]
         print("  (chat with the guide is off — set ANTHROPIC_API_KEY "
               "to turn it on)")

@@ -112,7 +112,7 @@ class MCPServer:
         return {
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "coursec", "version": "0.1.0"},
+            "serverInfo": {"name": "sylabis", "version": "0.1.0"},
         }
 
     def _call_tool(self, params: dict) -> dict:
@@ -140,7 +140,7 @@ class MCPServer:
                 "error": {"code": code, "message": message}}
 
     def _log(self, msg: str) -> None:
-        print(f"[coursec.mcp] {msg}", file=sys.stderr, flush=True)
+        print(f"[sylabis.mcp] {msg}", file=sys.stderr, flush=True)
 
     def _llm(self) -> LLM:
         if self._llm_instance is None:

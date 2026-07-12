@@ -240,7 +240,7 @@ def _emit_repo(out: Path, topic: str, spec: dict, harvest: dict,
 
     # GitHub-as-UI: the bundle repo grades itself on push (P1). Requires
     # the learner's repo to define secret ANTHROPIC_API_KEY (and optionally
-    # var COURSEC_GIT_URL); see comments inside the workflow.
+    # var SYLABIS_GIT_URL); see comments inside the workflow.
     wf_dir = out / ".github" / "workflows"
     wf_dir.mkdir(parents=True, exist_ok=True)
     (wf_dir / "grade.yml").write_text(_GRADE_WORKFLOW)
@@ -260,13 +260,13 @@ def _rubric_dimensions(m: dict) -> list[dict]:
 
 
 _GRADE_WORKFLOW = '''\
-# coursec grader — emitted into every compiled course bundle.
+# sylabis grader — emitted into every compiled course bundle.
 # GitHub IS the UI: push artifact.md + reflection.md, get graded feedback
 # as a commit (push) or a PR comment (pull request).
 #
 # One-time repo setup:
 #   1. Settings -> Secrets: add ANTHROPIC_API_KEY
-#   2. (optional) Settings -> Variables: COURSEC_GIT_URL to pin the
+#   2. (optional) Settings -> Variables: SYLABIS_GIT_URL to pin the
 #      compiler source; defaults below.
 name: grade
 
@@ -298,8 +298,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install coursec
-        run: pip install "${{ vars.COURSEC_GIT_URL || 'git+https://github.com/dhruvakrishnan/coursec' }}"
+      - name: Install sylabis
+        run: pip install "${{ vars.SYLABIS_GIT_URL || 'git+https://github.com/dhruvakrishnan/sylabis' }}"
 
       - name: Find changed milestones
         id: changed
@@ -322,7 +322,7 @@ jobs:
           for MID in ${{ steps.changed.outputs.mids }}; do
             echo "## $MID" >> /tmp/grade-report.md
             echo '```'    >> /tmp/grade-report.md
-            if ! coursec grade . "$MID" >> /tmp/grade-report.md 2>&1; then
+            if ! sylabis grade . "$MID" >> /tmp/grade-report.md 2>&1; then
               FAILED=1
             fi
             echo '```'    >> /tmp/grade-report.md
@@ -339,7 +339,7 @@ jobs:
       - name: Commit grade state
         if: github.event_name == 'push'
         run: |
-          git config user.name "coursec-grader"
+          git config user.name "sylabis-grader"
           git config user.email "grader@users.noreply.github.com"
           git add -A
           git commit -m "grade: ${{ steps.changed.outputs.mids }}" || echo "nothing to commit"

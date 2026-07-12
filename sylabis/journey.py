@@ -21,10 +21,10 @@ COURSES_SUBDIR = "courses"
 
 
 def home(explicit: Path | str | None = None) -> Path:
-    """The learner's home: --home flag > $COURSEC_HOME > ~/coursec."""
+    """The learner's home: --home flag > $SYLABIS_HOME > ~/sylabis."""
     if explicit:
         return Path(explicit)
-    return Path(os.environ.get("COURSEC_HOME", str(Path.home() / "coursec")))
+    return Path(os.environ.get("SYLABIS_HOME", str(Path.home() / "sylabis")))
 
 
 def slugify(topic: str) -> str:
@@ -124,7 +124,7 @@ def next_steps(home_dir: Path) -> list[dict]:
 
 def submittable(home_dir: Path) -> list[dict]:
     """Ready milestones whose required files are already on disk — what
-    `coursec submit` can grade without being told a path or an id."""
+    `sylabis submit` can grade without being told a path or an id."""
     out = []
     for step in next_steps(home_dir):
         if step["status"] != "ready":

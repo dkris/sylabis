@@ -1,6 +1,6 @@
-# coursec — the learning agent
+# sylabis — the learning agent
 
-coursec turns learning into one continuous journey. Tell it what you want
+sylabis turns learning into one continuous journey. Tell it what you want
 to learn: it compiles a course from primary sources, teaches milestone by
 milestone, grades the real artifacts you build, adapts the path when you
 struggle or excel, and connects everything you verify into one growing
@@ -16,25 +16,33 @@ pip install -r requirements.txt        # or: pip install -e .
 export ANTHROPIC_API_KEY=sk-ant-...    # or put it in .env
 ```
 
+## Start
+
+```
+cd ~/sandbox/sylabis
+source .venv/bin/activate    # if not already active
+sylabis                      # talk mode — the agent drives the whole loop
+```
+
 ## The surface
 
 ```
-coursec                      # talk — the agent drives the whole loop
-coursec web                  # the same journey in your browser
-coursec learn "topic"        # start a course in your journey
-coursec next                 # what to do now, across every course
-coursec submit               # grade the work sitting in your journey
-coursec journey              # progress + the knowledge map
-coursec attach SOURCE        # connect a course from another repo or path
+sylabis                      # talk — the agent drives the whole loop
+sylabis web                  # the same journey in your browser
+sylabis learn "topic"        # start a course in your journey
+sylabis next                 # what to do now, across every course
+sylabis submit               # grade the work sitting in your journey
+sylabis journey              # progress + the knowledge map
+sylabis attach SOURCE        # connect a course from another repo or path
 ```
 
 No paths, no milestone ids, no flags required. Your journey lives in
-`~/coursec` (override with `$COURSEC_HOME` or `--home`): courses under
+`~/sylabis` (override with `$SYLABIS_HOME` or `--home`): courses under
 `courses/`, the cross-course knowledge map at `knowledge.md`. `submit`
 finds the milestone whose work is on disk and grades it.
 
 Every learner is different, so the same journey has three doors with
-identical powers: the terminal agent, the browser (`coursec web` — read
+identical powers: the terminal agent, the browser (`sylabis web` — read
 lessons, submit work, get graded feedback, chat with the guide, see the
 knowledge map drawn as a graph; plain HTML, no build step, no CDN), and
 any MCP client. Use whichever feels like home.
@@ -50,10 +58,10 @@ Everything degrades to plain text when piped or when `NO_COLOR` is set.
 The loop, if you prefer the verbs to the conversation:
 
 ```
-coursec learn "distill a small coding model for my MacBook M4" --hardware "M4 48GB"
-coursec next                 # read the lesson it points at
+sylabis learn "distill a small coding model for my MacBook M4" --hardware "M4 48GB"
+sylabis next                 # read the lesson it points at
 # do the work, drop artifact.md + reflection.md in the milestone dir
-coursec submit --hours 2.5   # grades, unlocks sidequests, injects remedials
+sylabis submit --hours 2.5   # grades, unlocks sidequests, injects remedials
 ```
 
 ## Connected curriculum
@@ -62,12 +70,12 @@ Every passing grade verifies the milestone's core concepts. The journey
 accumulates them — with evidence: which course, which artifact, what
 grade — and feeds them into every new compile as assumed knowledge, so
 course N+1 builds on what course N proved instead of re-teaching it.
-`coursec journey` renders the map; concepts verified in more than one
-course show up as connections, and `coursec web` draws the whole thing
+`sylabis journey` renders the map; concepts verified in more than one
+course show up as connections, and `sylabis web` draws the whole thing
 as a graph: courses on one side, verified concepts on the other, bridge
 concepts ringed where courses meet.
 
-Courses don't have to live in the journey to join it. `coursec attach`
+Courses don't have to live in the journey to join it. `sylabis attach`
 connects content from anywhere — a git URL clones the bundle in, a local
 path symlinks it — and its verified knowledge counts like any other's,
 so curricula connect across repositories, not just within one directory.
@@ -75,8 +83,8 @@ so curricula connect across repositories, not just within one directory.
 ## Claude as interface (MCP)
 
 ```
-python -m coursec.cli serve                  # the whole journey
-python -m coursec.cli serve ~/path/course    # one bundle (legacy scope)
+python -m sylabis.cli serve                  # the whole journey
+python -m sylabis.cli serve ~/path/course    # one bundle (legacy scope)
 ```
 
 Journey scope serves the same nine tools the interactive agent uses —
@@ -84,8 +92,8 @@ Journey scope serves the same nine tools the interactive agent uses —
 … — so Claude Desktop can run the entire loop across every course:
 
 ```json
-{"mcpServers": {"coursec": {
-  "command": "python", "args": ["-m", "coursec.cli", "serve"]}}}
+{"mcpServers": {"sylabis": {
+  "command": "python", "args": ["-m", "sylabis.cli", "serve"]}}}
 ```
 
 ## GitHub as interface
@@ -105,8 +113,8 @@ lives in `tests/` (`python -m tests.run_all`).
 ## Architecture
 
 ```
-coursec/
-├── agent.py        the harness: one streaming tool-use loop; coursec IS
+sylabis/
+├── agent.py        the harness: one streaming tool-use loop; sylabis IS
 │                   this agent (terminal live, web silent — same loop)
 ├── console.py      the terminal experience: streamed prose, ⏺ tool-call
 │                   trace lines with ⎿ result previews, spinner, ANSI-safe

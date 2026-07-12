@@ -23,15 +23,15 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from coursec import journey  # noqa: E402
-from coursec import okf  # noqa: E402
-from coursec.compiler import compile_course, compile_remedial, self_test, _check_dag  # noqa: E402
-from coursec.grader import grade  # noqa: E402
-from coursec.llm import LLM, parse_json  # noqa: E402
-from coursec.mcp_server import MCPServer  # noqa: E402
-from coursec.path_engine import decide, actuate  # noqa: E402
-from coursec.tools import JourneyTools, ToolError  # noqa: E402
-from coursec.verify import resolve_locator, verify_sources  # noqa: E402
+from sylabis import journey  # noqa: E402
+from sylabis import okf  # noqa: E402
+from sylabis.compiler import compile_course, compile_remedial, self_test, _check_dag  # noqa: E402
+from sylabis.grader import grade  # noqa: E402
+from sylabis.llm import LLM, parse_json  # noqa: E402
+from sylabis.mcp_server import MCPServer  # noqa: E402
+from sylabis.path_engine import decide, actuate  # noqa: E402
+from sylabis.tools import JourneyTools, ToolError  # noqa: E402
+from sylabis.verify import resolve_locator, verify_sources  # noqa: E402
 
 FIX = Path(__file__).parent.parent / "fixtures"
 
@@ -543,8 +543,8 @@ class _StubModel:
 
 
 def _stub_agent(tmp, replies):
-    from coursec.agent import Agent
-    from coursec.console import Console
+    from sylabis.agent import Agent
+    from sylabis.console import Console
     return Agent(_journey_home(tmp), llm=_StubModel(replies),
                  console=Console(enabled=False))
 
@@ -601,7 +601,7 @@ def test_agent_interrupt_rolls_back_turn(tmp):
 
 
 def test_console_trace_previews():
-    from coursec.console import Console, preview_args, preview_result
+    from sylabis.console import Console, preview_args, preview_result
     s = preview_args({"artifact": "x" * 500, "course": "survey"})
     assert "(500 chars)" in s and "x" * 60 not in s, \
         "long values collapse to a length note"
@@ -632,7 +632,7 @@ def test_mcp_serves_both_scopes(tmp):
 # ------------------------------------------------------------ web interface
 
 def test_md_to_html_subset():
-    from coursec.web import md_to_html
+    from sylabis.web import md_to_html
     out = md_to_html("# T\n\n- a\n- **b**\n\n```\n<x>\n```\n\n"
                      "see [doc](knowledge/index.md) `c`")
     assert "<h1>T</h1>" in out and "<li><strong>b</strong></li>" in out
@@ -649,7 +649,7 @@ def test_web_serves_the_loop(tmp):
     import http.client
     import threading
     from urllib.parse import urlencode
-    from coursec.web import make_server
+    from sylabis.web import make_server
 
     home = _journey_home(tmp)
     compile_into(home, "survey")

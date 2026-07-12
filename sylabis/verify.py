@@ -27,8 +27,8 @@ _DOI = re.compile(r"^(?:doi:\s*|https?://(?:dx\.)?doi\.org/)(10\.\S+)$", re.I)
 
 
 def _user_agent() -> str:
-    ua = "coursec/0.1 source-verifier"
-    mailto = os.environ.get("COURSEC_CONTACT_MAILTO")
+    ua = "sylabis/0.1 source-verifier"
+    mailto = os.environ.get("SYLABIS_CONTACT_MAILTO")
     if mailto:  # Crossref/arXiv polite-pool etiquette
         ua += f" (mailto:{mailto})"
     return ua
