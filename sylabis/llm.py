@@ -46,17 +46,26 @@ class LLM:
         return "".join(b.text for b in resp.content if b.type == "text")
 
     def chat(self, system: str, messages: list, tools: list,
-             max_tokens: int = 4000):
+             max_tokens: int = 4000, on_text=None):
         """One turn of a tool-use conversation; returns the raw response
         (the agent loop needs stop_reason and tool_use blocks, not just
-        text). No mock mode: the agent is a conversation with a live model;
-        everything below it (compiler, grader, tools) mocks independently."""
+        text). Pass on_text to stream prose deltas as they generate — the
+        terminal harness paints them live. No mock mode: the agent is a
+        conversation with a live model; everything below it (compiler,
+        grader, tools) mocks independently."""
         if self.mock:
             raise RuntimeError("chat has no mock mode — test the tools, "
                                "not the conversation")
-        return self.client.messages.create(
-            model=MODEL, max_tokens=max_tokens, system=system,
-            messages=messages, tools=tools)
+        if on_text is None:
+            return self.client.messages.create(
+                model=MODEL, max_tokens=max_tokens, system=system,
+                messages=messages, tools=tools)
+        with self.client.messages.stream(
+                model=MODEL, max_tokens=max_tokens, system=system,
+                messages=messages, tools=tools) as stream:
+            for delta in stream.text_stream:
+                on_text(delta)
+            return stream.get_final_message()
 
 
 def parse_json(text: str) -> dict:
