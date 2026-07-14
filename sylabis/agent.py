@@ -3,20 +3,25 @@ The agent harness. `sylabis` with no arguments lands here: a conversation
 in the terminal where the model drives the whole learn → submit → grade →
 adapt loop through the journey tools. The harness stays thin — everything
 that matters lives in the tools (tools.py) and the guide prompt
-(prompts.py) — but the *experience* is a modern agent CLI: prose streams
-as it generates, every tool call renders as a trace line with a result
-preview, a spinner covers the silences, slash commands handle the
-mechanical stuff locally, and Ctrl-C abandons a turn without losing the
-session. The same Agent runs silently under the web harness
-(console disabled), so there is exactly one conversation loop.
+(prompts.py) — and the loop itself renders nothing: it emits typed events
+on a bus (bus.py) and whoever subscribed paints them. The terminal
+subscribes a ConsoleRenderer; the web harness subscribes nothing and
+takes the returned text; a future streaming endpoint is one more
+subscriber, not a fork of this loop.
+
+The conversation survives the process: messages persist to the journey's
+session.jsonl (session.py) after each completed turn, so closing the
+terminal mid-course costs nothing. Ctrl-C abandons the current turn whole
+— memory and file always agree.
 """
-import sys
 from pathlib import Path
 
+from . import bus
 from . import journey
-from .console import Console
+from .console import Console, ConsoleRenderer
 from .llm import LLM
 from .prompts import GUIDE_SYSTEM
+from .session import Session
 from .tools import JourneyTools, ToolError
 
 MAX_TOOL_ROUNDS = 12  # per user turn; a guide that needs more is looping
@@ -37,16 +42,22 @@ class Agent:
         self.tools = JourneyTools(self.home, mock=mock)
         self.llm = llm or LLM(mock=mock)
         self.ui = console if console is not None else Console()
+        self.bus = bus.Bus()
+        self.bus.subscribe(ConsoleRenderer(self.ui))
+        self.session = Session(self.home)
+        self.messages: list[dict] = self.session.load()
         self.specs = [{"name": n, "description": d, "input_schema": s}
                       for n, (_, d, s) in self.tools.registry.items()]
 
     # ---------------------------------------------------------------- REPL
 
     def run(self) -> None:
-        self.ui.header("sylabis — the learning agent", self._status_lines()
-                       + ["/help for commands · Ctrl-D to leave"])
-        messages: list[dict] = []
-        first = True
+        status = self._status_lines()
+        if self.messages:
+            status.append(f"resumed conversation ({len(self.messages)} "
+                          "messages) · /clear starts fresh")
+        self.ui.header("sylabis — the learning agent",
+                       status + ["/help for commands · Ctrl-D to leave"])
         while True:
             try:
                 user = input(self._prompt()).strip()
@@ -60,15 +71,10 @@ class Agent:
             if not user:
                 continue
             if user.startswith("/"):
-                if self._command(user, messages):
+                if self._command(user):
                     return
                 continue
-            if first:
-                # First turn carries the standing instruction to orient.
-                user = f"(new session — orient first)\n{user}"
-                first = False
-            messages.append({"role": "user", "content": user})
-            self.turn(messages)
+            self.converse(user)
             self.ui.turn_end()
 
     def _prompt(self) -> str:
@@ -87,7 +93,7 @@ class Agent:
             line += f" · next: {s['milestone_id']} — {s['title']}"
         return [line]
 
-    def _command(self, cmd: str, messages: list[dict]) -> bool:
+    def _command(self, cmd: str) -> bool:
         """Local slash commands — mechanical questions get instant answers
         from the tools, no model round-trip. Returns True to exit."""
         name = cmd.split()[0].lower()
@@ -96,7 +102,8 @@ class Agent:
         if name == "/help":
             self.ui.text_block("\n" + _HELP)
         elif name == "/clear":
-            messages.clear()
+            self.messages.clear()
+            self.session.clear()
             self.ui.notice("conversation cleared — the journey is untouched")
         elif name in ("/journey", "/next"):
             tool = "journey" if name == "/journey" else "next_step"
@@ -111,30 +118,44 @@ class Agent:
 
     # ---------------------------------------------------------------- turns
 
+    def converse(self, text: str) -> str:
+        """One exchange against the agent's own transcript: append the
+        user message, run the turn, persist what survived. An interrupted
+        turn leaves no trace — not in memory, not on disk. Every harness
+        (terminal REPL, web chat) goes through here so persistence can
+        never diverge between doors."""
+        if not self.messages:
+            # First turn carries the standing instruction to orient.
+            text = f"(new session — orient first)\n{text}"
+        prev = len(self.messages)
+        self.messages.append({"role": "user", "content": text})
+        reply = self.turn(self.messages)
+        if len(self.messages) == prev + 1:  # rolled back: drop the user msg
+            del self.messages[prev:]
+            return reply
+        self.session.append(self.messages[prev:])
+        return reply
+
     def turn(self, messages: list[dict]) -> str:
         """One user turn: stream the model, run any tools it asks for, feed
-        results back, repeat until it answers in text. Renders through the
-        console as it goes and returns the full reply, so a silent harness
-        (web chat) gets the same conversation without the terminal. Ctrl-C
-        rolls the whole turn back — the transcript never holds a dangling
-        tool call."""
+        results back, repeat until it answers in text. Emits bus events as
+        it goes and returns the full reply. Ctrl-C rolls the whole turn
+        back — the transcript never holds a dangling tool call."""
         base = len(messages)
         said: list[str] = []
+        self.bus.emit(bus.TurnStarted())
         try:
             for _ in range(MAX_TOOL_ROUNDS):
-                self.ui.turn_start()
-                self.ui.spinner("thinking")
+                self.bus.emit(bus.ModelCallStarted())
                 streamed = False
 
                 def on_text(delta: str) -> None:
                     nonlocal streamed
                     streamed = True
-                    self.ui.text_delta(delta)
+                    self.bus.emit(bus.TextDelta(delta))
 
                 resp = self.llm.chat(GUIDE_SYSTEM, messages, self.specs,
-                                     on_text=on_text if self.ui.enabled
-                                     else None)
-                self.ui.stop_spinner()
+                                     on_text=on_text)
                 messages.append({"role": "assistant",
                                  "content": [b.model_dump()
                                              for b in resp.content]})
@@ -143,31 +164,30 @@ class Agent:
                 said += texts
                 if not streamed:
                     for t in texts:
-                        self.ui.text_block(t)
+                        self.bus.emit(bus.AssistantText(t))
                 elif texts:
-                    self.ui.text_delta("\n")
+                    self.bus.emit(bus.TextDelta("\n"))
                 if resp.stop_reason != "tool_use":
+                    self.bus.emit(bus.TurnEnded())
                     return "\n\n".join(said)
                 results = []
                 for block in resp.content:
                     if block.type != "tool_use":
                         continue
-                    self.ui.tool_call(block.name, block.input)
-                    self.ui.spinner(block.name)
+                    self.bus.emit(bus.ToolCallStarted(block.name,
+                                                      block.input))
                     result = self._run_tool(block)
-                    self.ui.stop_spinner()
-                    self.ui.tool_result(result["content"],
-                                        error=result["is_error"])
+                    self.bus.emit(bus.ToolResult(block.name,
+                                                 result["content"],
+                                                 result["is_error"]))
                     results.append(result)
                 messages.append({"role": "user", "content": results})
-            self.ui.error("stopped — too many tool rounds in one turn")
-            return "\n\n".join(said + ["(stopped — too many tool rounds "
-                                       "in one turn)"])
+            reason = "stopped — too many tool rounds in one turn"
+            self.bus.emit(bus.TurnStopped(reason))
+            return "\n\n".join(said + [f"({reason})"])
         except KeyboardInterrupt:
             del messages[base:]
-            self.ui.stop_spinner()
-            print(file=sys.stderr)
-            self.ui.notice("interrupted — this turn was rolled back")
+            self.bus.emit(bus.TurnInterrupted())
             return ""
 
     def _run_tool(self, block) -> dict:

@@ -24,7 +24,12 @@ SCRIPT_TIMEOUT = 300  # seconds per rubric script
 
 def grade(course_dir: Path, milestone_id: str, llm: LLM,
           hours_actual: float | None = None,
-          skip_tier3: bool = False) -> dict:
+          skip_tier3: bool = False,
+          run_scripts: bool = True) -> dict:
+    """run_scripts is the execution-trust gate (trust.py): callers acting
+    on model or journey-wide input pass the course's trust decision; an
+    explicit `sylabis grade DIR MID` keeps the default — naming the
+    directory yourself is the consent."""
     course_dir = Path(course_dir)
     m_dir = course_dir / milestone_id
     checkpoint = yaml.safe_load((m_dir / "checkpoint.yaml").read_text())
@@ -70,6 +75,17 @@ def grade(course_dir: Path, milestone_id: str, llm: LLM,
 
     scripts = (checkpoint.get("rubric") or {}).get("scripts") or []
     if checkpoint["grader_type"] in ("executable", "hybrid") and scripts:
+        if not run_scripts:
+            # Blocked like a failed tier: nothing executes, and the
+            # feedback says exactly how to consent.
+            result["failure_flags"].append("scripts_blocked_untrusted")
+            result["feedback"] = (
+                "Executable grading is off for this course — its rubric "
+                "scripts run real code on your machine and the course was "
+                "attached from elsewhere. Review the scripts, then allow "
+                "them with: sylabis trust <course>")
+            _write(m_dir, course_dir, result)
+            return result
         script_score, script_flags, script_notes = _run_rubric_scripts(
             m_dir, scripts)
         result["rubric_scripts"] = script_notes

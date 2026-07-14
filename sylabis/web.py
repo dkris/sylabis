@@ -352,8 +352,7 @@ class WebApp:
         self.mock = mock
         self.tools = JourneyTools(self.home, mock=mock)
         self.lock = threading.Lock()  # compiling, grading, chat: one at a time
-        self._agent = None
-        self._chat: list[dict] = []
+        self._agent = None  # owns the transcript; persisted via session.py
 
     # ------------------------------------------------------------- shell
 
@@ -881,10 +880,9 @@ understanding, not polish.</p>
         with self.lock:
             if self._agent is None:  # same loop as the terminal, silenced
                 self._agent = Agent(self.home, console=Console(enabled=False))
-            if not self._chat:
-                message = f"(new session — orient first)\n{message}"
-            self._chat.append({"role": "user", "content": message})
-            return self._agent.turn(self._chat)
+            # converse() owns the transcript AND its persistence: the web
+            # chat and the terminal resume the same session.jsonl.
+            return self._agent.converse(message)
 
     # ------------------------------------------------------------ helpers
 

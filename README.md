@@ -34,6 +34,7 @@ sylabis next                 # what to do now, across every course
 sylabis submit               # grade the work sitting in your journey
 sylabis journey              # progress + the knowledge map
 sylabis attach SOURCE        # connect a course from another repo or path
+sylabis trust [COURSE]       # allow an attached course's rubric scripts
 ```
 
 No paths, no milestone ids, no flags required. Your journey lives in
@@ -58,6 +59,9 @@ spinner covers the thinking, Ctrl-C abandons a turn without losing the
 session, and slash commands (`/journey`, `/next`, `/clear`, `/help`)
 answer the mechanical questions locally with no model round-trip.
 Everything degrades to plain text when piped or when `NO_COLOR` is set.
+The conversation itself survives the process: it persists to the
+journey's `session.jsonl` after every completed turn, the terminal and
+the web chat resume the same transcript, and `/clear` starts fresh.
 
 The loop, if you prefer the verbs to the conversation:
 
@@ -83,6 +87,15 @@ Courses don't have to live in the journey to join it. `sylabis attach`
 connects content from anywhere — a git URL clones the bundle in, a local
 path symlinks it — and its verified knowledge counts like any other's,
 so curricula connect across repositories, not just within one directory.
+
+Attached content is knowledge, not authority: rubric scripts are real
+code, so executable grading stays **off** for an attached course until
+you consent (`sylabis trust <course>`, or `attach --trust`). Courses you
+compile into your own journey are trusted automatically — you asked for
+that code to exist. The decisions live in `trust.yaml` at the journey
+root; explicit single-course commands (`sylabis grade DIR MID`, the
+bundled CI workflow) are not gated, because naming the directory
+yourself is the consent.
 
 ## Claude as interface (MCP)
 
@@ -120,6 +133,12 @@ lives in `tests/` (`python -m tests.run_all`).
 sylabis/
 ├── agent.py        the harness: one streaming tool-use loop; sylabis IS
 │                   this agent (terminal live, web silent — same loop)
+├── bus.py          typed turn events; the loop narrates, subscribers
+│                   render — the loop never knows who is watching
+├── session.py      the conversation survives the process: flat JSONL at
+│                   the journey root, shared by terminal and web
+├── trust.py        the execution boundary: per-course consent before an
+│                   attached course's rubric scripts run
 ├── console.py      the terminal experience: streamed prose, ⏺ tool-call
 │                   trace lines with ⎿ result previews, spinner, ANSI-safe
 ├── tools.py        the agent surface — one journey-scoped tool registry
@@ -148,6 +167,12 @@ Design decisions that are deliberate, not shortcuts:
   the terminal agent and any MCP client get exactly the same powers.
 - The guide never writes the learner's artifact — the work must be the
   learner's own, or the grades (and the portfolio built on them) mean nothing.
+- The tool surface stays closed and domain-shaped: no generic read/write/
+  bash for the model, ever — the guarantees above are enforced by absence
+  of capability, not by instructions. Extensibility likewise waits until
+  a real second author needs it.
+- Executable grading is consent-gated per course (trust.py): code from an
+  attached repo never runs because a model or a `submit` sweep decided to.
 - The self-test gate (structural + OKF conformance) blocks shipping a broken course.
 - The claim audit blocks Tier 3 judgment on artifacts that overclaim.
 - Explain-back always runs and can cap the grade — rubric gaming defense.
