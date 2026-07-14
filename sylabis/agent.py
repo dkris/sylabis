@@ -156,9 +156,13 @@ class Agent:
 
                 resp = self.llm.chat(GUIDE_SYSTEM, messages, self.specs,
                                      on_text=on_text)
-                messages.append({"role": "assistant",
-                                 "content": [b.model_dump()
-                                             for b in resp.content]})
+                content = []
+                for b in resp.content:
+                    d = b.model_dump()
+                    for extra in getattr(b, "__api_exclude__", ()):
+                        d.pop(extra, None)
+                    content.append(d)
+                messages.append({"role": "assistant", "content": content})
                 texts = [b.text.strip() for b in resp.content
                          if b.type == "text" and b.text.strip()]
                 said += texts
