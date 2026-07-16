@@ -15,6 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
+sy = "sylabis.cli:main"
 sylabis = "sylabis.cli:main"
 
 [tool.setuptools]

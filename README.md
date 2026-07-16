@@ -12,28 +12,32 @@ The learner's whole job is to learn. The agent does the rest.
 ## Install
 
 ```
-pip install -r requirements.txt        # or: pip install -e .
+curl -fsSL https://raw.githubusercontent.com/dkris/sylabis/main/install.sh | sh
+```
+
+That gives you `sy`, the agent, on your PATH (an isolated install under
+`~/.local/share/sylabis` — no system Python touched; Python 3.10+ must be
+installed). Re-run the same line to upgrade; add `-s -- --uninstall` to
+remove. `sylabis` is installed too as the long-form alias.
+
+```
 export ANTHROPIC_API_KEY=sk-ant-...    # or put it in .env
+sy                                     # talk mode — the agent drives the whole loop
 ```
 
-## Start
-
-```
-cd ~/sandbox/sylabis
-source .venv/bin/activate    # if not already active
-sylabis                      # talk mode — the agent drives the whole loop
-```
+Developing on sylabis itself? `pip install -e .` in a virtualenv gives
+you the same `sy` command from your checkout.
 
 ## The surface
 
 ```
-sylabis                      # talk — the agent drives the whole loop
-sylabis web                  # the same journey in your browser
-sylabis learn "topic"        # start a course in your journey
-sylabis next                 # what to do now, across every course
-sylabis submit               # grade the work sitting in your journey
-sylabis journey              # progress + the knowledge map
-sylabis attach SOURCE        # connect a course from another repo or path
+sy                      # talk — the agent drives the whole loop
+sy web                  # the same journey in your browser
+sy learn "topic"        # start a course in your journey
+sy next                 # what to do now, across every course
+sy submit               # grade the work sitting in your journey
+sy journey              # progress + the knowledge map
+sy attach SOURCE        # connect a course from another repo or path
 ```
 
 No paths, no milestone ids, no flags required. Your journey lives in
@@ -62,10 +66,10 @@ Everything degrades to plain text when piped or when `NO_COLOR` is set.
 The loop, if you prefer the verbs to the conversation:
 
 ```
-sylabis learn "distill a small coding model for my MacBook M4" --hardware "M4 48GB"
-sylabis next                 # read the lesson it points at
+sy learn "distill a small coding model for my MacBook M4" --hardware "M4 48GB"
+sy next                      # read the lesson it points at
 # do the work, drop artifact.md + reflection.md in the milestone dir
-sylabis submit --hours 2.5   # grades, unlocks sidequests, injects remedials
+sy submit --hours 2.5        # grades, unlocks sidequests, injects remedials
 ```
 
 ## Connected curriculum
@@ -74,12 +78,12 @@ Every passing grade verifies the milestone's core concepts. The journey
 accumulates them — with evidence: which course, which artifact, what
 grade — and feeds them into every new compile as assumed knowledge, so
 course N+1 builds on what course N proved instead of re-teaching it.
-`sylabis journey` renders the map; concepts verified in more than one
-course show up as connections, and `sylabis web` draws the whole thing
+`sy journey` renders the map; concepts verified in more than one
+course show up as connections, and `sy web` draws the whole thing
 as a graph: courses on one side, verified concepts on the other, bridge
 concepts ringed where courses meet.
 
-Courses don't have to live in the journey to join it. `sylabis attach`
+Courses don't have to live in the journey to join it. `sy attach`
 connects content from anywhere — a git URL clones the bundle in, a local
 path symlinks it — and its verified knowledge counts like any other's,
 so curricula connect across repositories, not just within one directory.
