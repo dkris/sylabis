@@ -17,33 +17,47 @@ curl -fsSL https://raw.githubusercontent.com/dkris/sylabis/main/install.sh | sh
 
 That gives you `sy`, the agent, on your PATH (an isolated install under
 `~/.local/share/sylabis` — no system Python touched; Python 3.10+ must be
-installed). Re-run the same line to upgrade; add `-s -- --uninstall` to
-remove. `sylabis` is installed too as the long-form alias.
+installed), and offers to save your API key right there. Re-run the same
+line to upgrade; add `-s -- --uninstall` to remove. `sylabis` is
+installed too as the long-form alias.
 
 ```
-export ANTHROPIC_API_KEY=sk-ant-...    # or put it in .env
-sy                                     # talk mode — the agent drives the whole loop
+sy init    # once: saves + checks your API key (~/sylabis/.env)
+sy         # talk mode — the agent drives the whole loop
 ```
+
+`sy init` stores the key in `$SYLABIS_HOME/.env` (chmod 600), so every
+command finds it from any directory — no exports, no shell profile
+edits. Get a key at [console.anthropic.com](https://console.anthropic.com/settings/keys).
+
+**What it costs:** compiling a course is roughly $1–4 of API usage;
+grading a submission $0.10–0.50.
 
 Developing on sylabis itself? `pip install -e .` in a virtualenv gives
-you the same `sy` command from your checkout.
+you the same `sy` command from your checkout. On Windows, run everything
+under WSL. `SYLABIS_MODEL` overrides the model id if you need to.
 
 ## The surface
 
 ```
+sy init                 # once: save + check your API key
 sy                      # talk — the agent drives the whole loop
 sy web                  # the same journey in your browser
 sy learn "topic"        # start a course in your journey
 sy next                 # what to do now, across every course
 sy submit               # grade the work sitting in your journey
 sy journey              # progress + the knowledge map
+sy publish [COURSE]     # put a course on GitHub — it grades itself on push
+sy sync [COURSE]        # pull CI-graded state down, push local work up
+sy share [COURSE]       # the links that show your verified work
 sy attach SOURCE        # connect a course from another repo or path
 ```
 
 No paths, no milestone ids, no flags required. Your journey lives in
 `~/sylabis` (override with `$SYLABIS_HOME` or `--home`): courses under
-`courses/`, the cross-course knowledge map at `knowledge.md`. `submit`
-finds the milestone whose work is on disk and grades it.
+`courses/`, the cross-course knowledge map at `knowledge.md`, your API
+key in `.env`. `submit` finds the milestone whose work is on disk,
+grades it, and commits the result to the course's git history.
 
 Every learner is different, so the same journey has three doors with
 identical powers: the terminal agent, the browser, and any MCP client.
@@ -101,15 +115,44 @@ Journey scope serves the same nine tools the interactive agent uses —
 
 ```json
 {"mcpServers": {"sylabis": {
-  "command": "python", "args": ["-m", "sylabis.cli", "serve"]}}}
+  "command": "~/.local/share/sylabis/venv/bin/python",
+  "args": ["-m", "sylabis.cli", "serve"]}}}
 ```
 
-## GitHub as interface
+(That's the installer's venv; with a dev checkout, point `command` at
+your virtualenv's `python` instead — a bare `python` usually won't have
+sylabis importable.)
 
-Every compiled bundle ships `.github/workflows/grade.yml`: push the
-bundle to a repo, add the `ANTHROPIC_API_KEY` secret, and pushing
-`artifact.md`/`reflection.md` triggers grading — feedback lands as a
-commit (push) or PR comment (pull request).
+## GitHub as the artifact store
+
+Every compiled bundle is a git repository from birth, and every
+`sy submit` commits the work and its grade to the course history. One
+command puts the whole thing on GitHub:
+
+```
+sy publish            # creates the repo (gh CLI) or wires --repo URL, pushes
+sy sync               # later: pull CI-graded state down, push local work up
+sy share              # the links worth sending to someone
+```
+
+Bundles ship `.github/workflows/grade.yml`, so once the
+`ANTHROPIC_API_KEY` secret is added to the repo (the one manual step),
+pushing `artifact.md`/`reflection.md` triggers grading in CI — feedback
+lands as a commit (push) or PR comment (pull request). Repos are created
+private by default: a bundle holds your notes and reflections, not just
+results. `--public` is your call.
+
+## Shareable grades
+
+Every grading — pass or fail — writes `portfolio/reports/<milestone>.md`:
+a self-contained, deterministic report with the grade, tier-by-tier
+results, explain-back verdicts, attempt history (reconstructed from the
+append-only `events.jsonl`), and the sha256 of the exact artifact that
+was graded. The bundle root gets a `README.md` landing page GitHub
+renders automatically — milestone checklist, badges, and an attestation
+note — so `sy share`'s links show verified work, not claims. Reports are
+tamper-evident (hashes + event log + git history), not cryptographically
+signed; the bundle on disk is the credential.
 
 ## Mock mode
 
@@ -177,6 +220,9 @@ sylabis/
 │                   system — compile, lessons, tiered grades, Sy dock, map
 ├── journey.py      connected curriculum: courses (attached from any repo),
 │                   verified knowledge, next-step, the knowledge map
+├── config.py       the API key + model config; `sy init` writes here
+├── gitio.py        bundles as git repos: init from birth, commit on submit,
+│                   publish/sync with GitHub — always optional, never blocking
 ├── llm.py          one entry point for all model calls; mock mode
 ├── prompts.py      the pipeline stages ARE these prompts — version them like code
 ├── compiler.py     intake → harvest → sequence → emit → self-test (+ remedials)
@@ -213,6 +259,8 @@ Design decisions that are deliberate, not shortcuts:
 - The knowledge map connects courses by verified concepts; it does not yet
   suggest what to learn next from the graph (collect first, infer later).
 - The web app is local and single-learner: no auth, bind to 127.0.0.1 only.
-- Attached courses are clones/links; nothing pulls them automatically —
-  `git pull` in the course directory refreshes one.
+- Grade reports are tamper-evident (hashes, event log, git history), not
+  cryptographically signed — there is no external credential authority.
+- `sy publish` needs the `gh` CLI to create repos itself; without it you
+  create the repo once by hand (`sy publish` prints the exact steps).
 - Single-user, local only. That is the point of a prototype.

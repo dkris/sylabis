@@ -11,9 +11,12 @@ The four canonical cases: (1) structurally incomplete -> Tier 1 blocks;
 quality-weak -> Tier 3 catches, Tiers 1-2 pass; (4) genuinely strong ->
 all tiers pass. Everything after that attacks the seams.
 """
+import hashlib
 import io
 import json
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from contextlib import redirect_stdout
@@ -23,6 +26,9 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from sylabis import cli  # noqa: E402
+from sylabis import config  # noqa: E402
+from sylabis import gitio  # noqa: E402
 from sylabis import journey  # noqa: E402
 from sylabis import okf  # noqa: E402
 from sylabis.compiler import compile_course, compile_remedial, self_test, _check_dag  # noqa: E402
@@ -438,7 +444,6 @@ def test_journey_map_is_okf(tmp):
 def test_attach_connects_other_repos(tmp):
     """Cross-repo connection: a course living anywhere joins the journey
     (path -> symlink, git URL -> clone) and its knowledge counts."""
-    import subprocess
     home = _journey_home(tmp)
 
     elsewhere = tmp / "elsewhere" / "survey"
@@ -448,14 +453,11 @@ def test_attach_connects_other_repos(tmp):
     linked = journey.attach(home, str(elsewhere))
     assert linked in journey.course_dirs(home)
 
+    # compile now yields a ready git repo (repo-from-birth) — clone it as-is
     repo = tmp / "repo-course"
     with redirect_stdout(io.StringIO()):
         compile_course("Survey synthesis", {"weekly_hours": 5}, repo,
                        LLM(mock=True))
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
-                    "commit", "-qm", "course"], cwd=repo, check=True)
     cloned = journey.attach(home, f"file://{repo}")
     assert (cloned / "course.yaml").exists() and (cloned / ".git").exists()
 
@@ -726,6 +728,466 @@ def test_web_serves_the_loop(tmp):
         assert status == 200 and "Knowledge base" in page
     finally:
         server.shutdown()
+
+
+# -------------------------------------------------------------- setup pillar
+
+class _env:
+    """Save/restore the env vars a test mutates — the runner has no
+    fixtures, so hygiene is explicit."""
+
+    KEYS = ("ANTHROPIC_API_KEY", "SYLABIS_HOME", "SYLABIS_MODEL")
+
+    def __enter__(self):
+        self.saved = {k: os.environ.get(k) for k in self.KEYS}
+        return self
+
+    def __exit__(self, *exc):
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def run_cli(*argv) -> tuple[int, str]:
+    """Drive cli.main() exactly as a shell would; returns (exit code, stdout)."""
+    old, sys.argv = sys.argv, ["sy", *argv]
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            cli.main()
+        code = 0
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 0 if e.code is None else 1
+    finally:
+        sys.argv = old
+    return code, buf.getvalue()
+
+
+def case_env_loaded_from_home(tmp):
+    """The documented .env path must work from ANY directory: the key in
+    $SYLABIS_HOME/.env is found without exporting anything."""
+    with _env():
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        os.environ["SYLABIS_HOME"] = str(tmp / "home")
+        config.save_key("sk-home-test", tmp / "home")
+        config.load_env()
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-home-test"
+
+
+def case_missing_key_friendly(tmp):
+    """No key must mean a one-line pointer at `sy init` — never a traceback,
+    never a network call."""
+    with _env():
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        try:
+            LLM(mock=False)
+        except SystemExit as e:
+            assert "sy init" in str(e)
+        else:
+            raise AssertionError("missing key must exit friendly")
+
+
+def case_model_override(tmp):
+    with _env():
+        os.environ["SYLABIS_MODEL"] = "claude-test-1"
+        assert config.model() == "claude-test-1"
+        assert LLM(mock=True).model == "claude-test-1"
+    assert config.model() == config.DEFAULT_MODEL or \
+        os.environ.get("SYLABIS_MODEL")
+
+
+def case_tool_missing_key_is_toolerror(tmp):
+    """On the agent/web/MCP surfaces a missing key is a recoverable tool
+    result, not process death."""
+    with _env():
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        tools = JourneyTools(_journey_home(tmp), mock=False)
+        try:
+            tools.call("start_course", {"topic": "x"})
+        except ToolError as e:
+            assert "sy init" in str(e)
+        else:
+            raise AssertionError("missing key must be a ToolError")
+
+
+def case_mock_never_blocked(tmp):
+    """--mock needs no key, no prompt, no network — the testability contract."""
+    with _env():
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        course = compile_mock(tmp)
+        submit(course, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+        assert grade_mock(course, "00-data-audit")["passed"]
+
+
+def case_init_writes_env(tmp):
+    home = tmp / "home"
+    home.mkdir()
+    (home / ".env").write_text("UNRELATED=keepme\n")
+    code, out = run_cli("init", "--key", "sk-first", "--no-validate",
+                        "--home", str(home))
+    assert code == 0 and "Key saved" in out and "sy" in out
+    env = (home / ".env").read_text()
+    assert "UNRELATED=keepme" in env and "ANTHROPIC_API_KEY=sk-first" in env
+    assert (os.stat(home / ".env").st_mode & 0o777) == 0o600
+    run_cli("init", "--key", "sk-second", "--no-validate", "--home", str(home))
+    env = (home / ".env").read_text()
+    assert env.count("ANTHROPIC_API_KEY=") == 1, "no duplicate key lines"
+    assert "sk-second" in env and "sk-first" not in env
+
+
+def case_install_url_alignment(tmp):
+    """install.sh and the emitted grade.yml must point at the SAME repo —
+    drift here bricks CI grading in published bundles."""
+    from sylabis.compiler import _GRADE_WORKFLOW
+    root = Path(__file__).parent.parent
+    assert config.SYLABIS_REPO in (root / "install.sh").read_text()
+    assert "__SYLABIS_REPO__" in _GRADE_WORKFLOW, "placeholder must exist"
+    course = compile_mock(tmp)
+    wf = (course / ".github" / "workflows" / "grade.yml").read_text()
+    assert f"git+{config.SYLABIS_REPO}" in wf
+    assert "__SYLABIS_REPO__" not in wf
+
+
+def case_install_sh_posix():
+    root = Path(__file__).parent.parent
+    proc = subprocess.run(["sh", "-n", str(root / "install.sh")],
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+
+
+# ------------------------------------------------------------- GitHub pillar
+
+def git(cdir: Path, *args: str) -> str:
+    proc = subprocess.run(["git", "-C", str(cdir), "-c", "user.email=t@t",
+                           "-c", "user.name=t", *args],
+                          capture_output=True, text=True, check=True)
+    return proc.stdout.strip()
+
+
+def commit_count(cdir: Path) -> int:
+    return int(git(cdir, "rev-list", "--count", "HEAD"))
+
+
+def case_compile_inits_git(tmp):
+    course = compile_mock(tmp)
+    assert (course / ".git").exists(), "repo from birth"
+    assert commit_count(course) == 1, "exactly the initial commit"
+    assert ".env" in (course / ".gitignore").read_text()
+    assert "merge=union" in (course / ".gitattributes").read_text()
+    assert event_types(course).count("repo.initialized") == 1
+    assert not git(course, "status", "--porcelain"), \
+        "initial commit must capture the whole bundle, event log included"
+
+
+def case_ensure_repo_guards(tmp):
+    course = compile_mock(tmp)
+    assert gitio.ensure_repo(course) is False, "already a repo -> no-op"
+    nested = course / "sub"
+    nested.mkdir()
+    assert gitio.ensure_repo(nested) is False, "never nest repos"
+    assert gitio.commit_all(course, "noop") is False, "clean tree -> False"
+
+
+def case_no_git_graceful(tmp):
+    """git missing = everything still works, just without history."""
+    real = gitio.has_git
+    gitio.has_git = lambda: False
+    try:
+        course = compile_mock(tmp)
+        assert not (course / ".git").exists()
+        submit(course, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+        assert grade_mock(course, "00-data-audit")["passed"]
+        assert "repo.initialized" not in event_types(course)
+    finally:
+        gitio.has_git = real
+
+
+def case_web_url_forms():
+    assert gitio.web_url("git@github.com:me/course.git") == \
+        "https://github.com/me/course"
+    assert gitio.web_url("https://github.com/me/course.git") == \
+        "https://github.com/me/course"
+    assert gitio.web_url("https://gitlab.com/me/course") == \
+        "https://gitlab.com/me/course"
+    assert gitio.web_url("file:///tmp/bare") is None
+    assert gitio.web_url(None) is None
+    assert gitio.web_url("gibberish") is None
+
+
+def case_submit_autocommits_once(tmp):
+    with _env():
+        os.environ["SYLABIS_HOME"] = str(tmp / "home")
+        home = _journey_home(tmp)
+        course = compile_into(home, "survey")
+        submit(course, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+        code, out = run_cli("submit", "--mock", "--home", str(home))
+        assert code == 0 and "Committed to course history." in out
+        assert commit_count(course) == 2, "initial + one grade commit"
+        assert git(course, "show", "HEAD:00-data-audit/artifact.md") == \
+            STRONG_ARTIFACT, "the learner's verbatim work is what history holds"
+
+
+def case_grade_plumbing_never_commits(tmp):
+    """THE pin: `sylabis grade` is what CI runs, and grade.yml commits its
+    own state — the plumbing verb must never create commits itself."""
+    course = compile_mock(tmp)
+    submit(course, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+    before = commit_count(course)
+    code, _ = run_cli("grade", str(course), "00-data-audit", "--mock")
+    assert code == 0
+    assert commit_count(course) == before, "grade plumbing must not commit"
+
+
+def _bare_remote(tmp: Path) -> Path:
+    bare = tmp / "remote.git"
+    # -b main so the bare's HEAD matches what bundles push — exactly what
+    # GitHub does when a repo is created with a matching default branch.
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)],
+                   check=True)
+    return bare
+
+
+def case_publish_to_file_remote(tmp):
+    course = compile_mock(tmp)
+    out = gitio.publish(course, repo_url=f"file://{_bare_remote(tmp)}")
+    assert out["remote_set"] and out["pushed_new"]
+    bare = tmp / "remote.git"
+    files = subprocess.run(
+        ["git", "-C", str(bare), "ls-tree", "-r", "--name-only", "HEAD"],
+        capture_output=True, text=True, check=True).stdout
+    assert "course.yaml" in files and ".github/workflows/grade.yml" in files
+    assert "README.md" in files, "the landing page ships with the push"
+    again = gitio.publish(course)
+    assert not again["remote_set"] and not again["pushed_new"], \
+        "re-publish when up to date must be a no-op"
+
+
+def case_publish_no_remote_no_gh(tmp):
+    real = gitio.has_gh
+    gitio.has_gh = lambda: False
+    try:
+        course = compile_mock(tmp)
+        try:
+            gitio.publish(course)
+        except gitio.GitError as e:
+            assert "remote add origin" in str(e), "the error IS the recipe"
+            assert "sy publish" in str(e)
+        else:
+            raise AssertionError("no remote + no gh must explain the steps")
+    finally:
+        gitio.has_gh = real
+
+
+def case_publish_tool_and_traversal(tmp):
+    with _env():
+        os.environ["SYLABIS_HOME"] = str(tmp / "home")
+        home = _journey_home(tmp)
+        course = compile_into(home, "survey")
+        tools = JourneyTools(home, mock=True)
+        for bad in ("../evil", "a/b"):
+            try:
+                tools.call("publish_course", {"course": bad})
+            except ToolError:
+                continue
+            raise AssertionError(f"must refuse {bad}")
+        out = tools.call("publish_course",
+                         {"course": "survey",
+                          "repo_url": f"file://{_bare_remote(tmp)}"})
+        assert "Published" in out
+        assert event_types(course).count("course.published") == 1
+
+
+def case_sync_pulls_ci_commits(tmp):
+    """The CI round-trip: a grade committed remotely (as grade.yml does)
+    arrives locally via sync, and the knowledge map hears about it."""
+    with _env():
+        os.environ["SYLABIS_HOME"] = str(tmp / "home")
+        home = _journey_home(tmp)
+        course = compile_into(home, "survey")
+        gitio.publish(course, repo_url=f"file://{_bare_remote(tmp)}")
+
+        ci = tmp / "ci-clone"
+        subprocess.run(["git", "clone", "-q", f"file://{tmp / 'remote.git'}",
+                        str(ci)], check=True)
+        (ci / "00-data-audit" / "note.md").write_text("graded in CI\n")
+        git(ci, "add", "-A")
+        git(ci, "commit", "-qm", "grade: 00-data-audit")
+        git(ci, "push", "-q")
+
+        tools = JourneyTools(home, mock=True)
+        msg = tools.call("sync_course", {"course": "survey"})
+        assert "pulled" in msg
+        assert (course / "00-data-audit" / "note.md").exists()
+        assert "course.synced" in event_types(course)
+        msg = tools.call("sync_course", {"course": "survey"})
+        assert "up to date" in msg, "sync is idempotent"
+
+
+def case_sync_divergence_friendly(tmp):
+    course = compile_mock(tmp)
+    gitio.publish(course, repo_url=f"file://{_bare_remote(tmp)}")
+    other = tmp / "other"
+    subprocess.run(["git", "clone", "-q", f"file://{tmp / 'remote.git'}",
+                    str(other)], check=True)
+    (other / "drift.md").write_text("remote side\n")
+    git(other, "add", "-A")
+    git(other, "commit", "-qm", "remote drift")
+    git(other, "push", "-q")
+    (course / "drift-local.md").write_text("local side\n")
+    try:
+        gitio.sync(course)
+    except gitio.GitError as e:
+        assert "pull --rebase" in str(e), "divergence must name the remedy"
+    else:
+        raise AssertionError("divergence must fail loudly, not merge")
+
+
+def case_sync_skips_unpublished(tmp):
+    with _env():
+        os.environ["SYLABIS_HOME"] = str(tmp / "home")
+        home = _journey_home(tmp)
+        compile_into(home, "survey")
+        code, out = run_cli("sync", "--home", str(home))
+        assert code == 0 and "not published" in out and "skipped" in out
+
+
+def case_share_composes_urls(tmp):
+    with _env():
+        os.environ["SYLABIS_HOME"] = str(tmp / "home")
+        home = _journey_home(tmp)
+        course = compile_into(home, "survey")
+        code, out = run_cli("share", "--home", str(home))
+        assert code == 0 and "publish" in out, "unpublished points at publish"
+        gitio.set_remote(course, "https://github.com/me/survey.git")
+        submit(course, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+        grade_mock(course, "00-data-audit")
+        code, out = run_cli("share", "--home", str(home))
+        assert code == 0
+        assert "https://github.com/me/survey/blob/main/README.md" in out
+        assert ("https://github.com/me/survey/blob/main/portfolio/reports/"
+                "00-data-audit.md") in out
+
+
+# ------------------------------------------------------------ sharing pillar
+
+def case_grade_report_emitted(tmp):
+    course = compile_mock(tmp)
+    submit(course, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+    r = grade_mock(course, "00-data-audit")
+    report = course / "portfolio" / "reports" / "00-data-audit.md"
+    assert report.exists()
+    meta, body = okf.parse_doc(report)
+    gy = yaml.safe_load((course / "00-data-audit" / "grade.yaml").read_text())
+    # the verbatim invariant: the shareable numbers ARE the grade record's
+    assert meta["grade"] == gy["grade"] == r["grade"]
+    assert meta["attempt"] == gy["attempt"]
+    assert meta["graded_at"] == gy["graded_at"]
+    assert meta["artifact_sha256"] == hashlib.sha256(
+        (course / "00-data-audit" / "artifact.md").read_bytes()).hexdigest()
+    inv = yaml.safe_load((course / "okf.yaml").read_text())
+    assert any(d["path"] == "portfolio/reports/00-data-audit.md"
+               for d in inv["documents"]), "report must be inventoried"
+    assert "How to verify" in body and "tamper-evident" in body
+
+
+def case_report_on_fail(tmp):
+    audit = {"claims": [
+        {"text": "Proves causation", "type": "causal", "evidence": "none",
+         "result": "fail", "flag": "unsupported_causal", "feedback": "hedge"}],
+        "summary": {"total": 1, "passed": 0, "failed": 1,
+                    "flags": ["unsupported_causal"], "blocking": True}}
+    fdir = make_fixtures(tmp, {"audit_00-data-audit": audit})
+    course = compile_mock(tmp, fdir)
+    submit(course, "00-data-audit", "Proves causation.", "reflection")
+    grade_mock(course, "00-data-audit", fdir)
+    meta, body = okf.parse_doc(
+        course / "portfolio" / "reports" / "00-data-audit.md")
+    assert meta["passed"] is False, "failures get reports too — honesty"
+    assert "`unsupported_causal`" in body, "exact flag strings, no paraphrase"
+    assert "not_yet-red" in body, "red badge on a fail"
+
+
+def case_report_attempt_history(tmp):
+    course = compile_mock(tmp)
+    submit(course, "00-data-audit", None, "reflection only")  # tier 1 fail
+    grade_mock(course, "00-data-audit")
+    submit(course, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+    grade_mock(course, "00-data-audit")
+    reports = list((course / "portfolio" / "reports").glob("*.md"))
+    assert len(reports) == 1, "one report per milestone, overwritten"
+    _, body = okf.parse_doc(reports[0])
+    assert "| 1 |" in body and "| 2 |" in body, \
+        "attempt history survives the overwrite via events.jsonl"
+
+
+def case_badge_thresholds():
+    assert "brightgreen" in okf.badge_markdown(0.95, True)
+    assert "-green" in okf.badge_markdown(0.80, True)
+    assert "-red" in okf.badge_markdown(0.60, False)
+    assert "95%" in okf.badge_markdown(0.95, True)
+
+
+def case_get_report_tool(tmp):
+    with _env():
+        os.environ["SYLABIS_HOME"] = str(tmp / "home")
+        home = _journey_home(tmp)
+        course = compile_into(home, "survey")
+        submit(course, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+        grade_mock(course, "00-data-audit")
+        tools = JourneyTools(home, mock=True)
+        out = tools.call("get_report", {"course": "survey",
+                                        "milestone_id": "00-data-audit"})
+        assert "Grade report — 00-data-audit" in out
+        for bad in ("../evil", "a/b"):
+            try:
+                tools.call("get_report", {"course": "survey",
+                                          "milestone_id": bad})
+            except ToolError:
+                continue
+            raise AssertionError(f"must refuse {bad}")
+
+
+def case_readme_emitted(tmp):
+    course = compile_mock(tmp)
+    meta, body = okf.parse_doc(course / "README.md")
+    assert meta["type"] == "readme" and meta["milestones_passed"] == 0
+    assert "not yet attempted" in body, "unfinished work is shown, not hidden"
+    assert "milestones-0%2F2" in body
+    submit(course, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+    grade_mock(course, "00-data-audit")
+    meta, body = okf.parse_doc(course / "README.md")
+    assert meta["milestones_passed"] == 1
+    assert "- [x] [00-data-audit" in body and "passed" in body
+    assert "portfolio/reports/00-data-audit.md" in body
+    assert body.count("00-data-audit — Data audit") <= 1 or \
+        body.count("- [x] [00-data-audit") == 1, "regenerated, not appended"
+    inv = yaml.safe_load((course / "okf.yaml").read_text())
+    assert any(d["path"] == "README.md" for d in inv["documents"])
+
+
+def case_manifest_fresh_after_grade(tmp):
+    """The credential invariant: after a grade, okf.yaml still inventories
+    the bundle exactly — no stale manifest, both directions clean."""
+    course = compile_mock(tmp)
+    submit(course, "00-data-audit", STRONG_ARTIFACT, STRONG_REFLECTION)
+    grade_mock(course, "00-data-audit")
+    assert okf.conformance_problems(course) == []
+
+
+def case_conformance_both_directions(tmp):
+    course = compile_mock(tmp)
+    okf.write_doc(course / "orphan.md", "source", "Orphan", "d", "body")
+    problems = okf.conformance_problems(course)
+    assert any("orphan.md" in p and "missing from okf.yaml" in p
+               for p in problems), problems
+    (course / "orphan.md").unlink()
+    idx = course / "index.md"
+    idx.write_text(idx.read_text() + "\ntampered\n")
+    problems = okf.conformance_problems(course)
+    assert any("index.md" in p and "hash mismatch" in p
+               for p in problems), problems
 
 
 # ------------------------------------------------------------------ verify.py

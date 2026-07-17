@@ -127,8 +127,8 @@ fi
 
 step "Installing sylabis from ${SOURCE}"
 if ! "$VENV_DIR/bin/pip" install --quiet --upgrade "$SOURCE"; then
-    fail "pip install failed. Re-run without '| sh' to see full output:
-    curl -fsSL https://raw.githubusercontent.com/dkris/sylabis/main/install.sh -o install.sh && sh install.sh"
+    say "${DIM}pip failed — retrying with full output:${RESET}"
+    "$VENV_DIR/bin/pip" install --upgrade "$SOURCE" || fail "pip install failed (full output above)."
 fi
 
 for name in sy sylabis; do
@@ -170,6 +170,25 @@ if ! on_path; then
     PATH_HINT="  Open a new terminal (or run: ${BOLD}${EXPORT_LINE}${RESET}) first."
 fi
 
+# ---------- first-run setup ----------------------------------------------
+# Offer to capture the API key right here — the one step between "installed"
+# and "learning". Reads from /dev/tty so it works under `curl | sh`; piped
+# installs with no terminal fall through silently to the `sy init` hint.
+
+KEY_SAVED=0
+ENV_FILE="${SYLABIS_HOME:-$HOME/sylabis}/.env"
+if [ -z "${ANTHROPIC_API_KEY:-}" ] && ! grep -sq '^ANTHROPIC_API_KEY=' "$ENV_FILE" && [ -r /dev/tty ]; then
+    printf '%s' "  Paste your Anthropic API key (console.anthropic.com/settings/keys), or Enter to skip: "
+    stty -echo < /dev/tty 2>/dev/null || true
+    IFS= read -r KEY < /dev/tty || KEY=""
+    stty echo < /dev/tty 2>/dev/null || true
+    printf '\n'
+    # Absolute installed path — the freshly-linked `sy` may not be on PATH yet.
+    if [ -n "$KEY" ] && "$VENV_DIR/bin/sy" init --key "$KEY"; then
+        KEY_SAVED=1
+    fi
+fi
+
 # ---------- done ----------------------------------------------------------
 
 VERSION="$("$VENV_DIR/bin/python" -c 'from importlib.metadata import version; print(version("sylabis"))' 2>/dev/null || echo "unknown")"
@@ -180,6 +199,8 @@ say ""
 say "  Start the agent:  ${BOLD}sy${RESET}"
 [ -n "$PATH_HINT" ] && say "$PATH_HINT"
 say ""
-say "  ${DIM}sy needs an Anthropic API key: export ANTHROPIC_API_KEY=sk-ant-...${RESET}"
+if [ "$KEY_SAVED" = 0 ]; then
+    say "  ${DIM}One step left: run \`sy init\` to save your Anthropic API key.${RESET}"
+fi
 say "  ${DIM}Upgrade any time by re-running this installer.${RESET}"
 say ""

@@ -31,11 +31,12 @@ python -m tests.run_all          # the entire test suite (exit 0 only if every c
 
 ### Running the app
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...       # or put it in .env (python-dotenv loads it)
+sy init                                   # once: saves the key to $SYLABIS_HOME/.env (0600)
 sy                                        # talk — the streaming agent drives the loop
 sy web [--port 8787]                      # the same journey in the browser (127.0.0.1 only)
 sy learn "topic" [--hours N --hardware .. --prior ..]
 sy next / sy submit / sy journey / sy attach SOURCE
+sy publish / sy sync / sy share           # GitHub: repo per bundle, CI grades pushes
 python -m sylabis.cli serve [COURSE_DIR]  # MCP stdio server (journey-wide without a dir)
 ```
 
@@ -54,10 +55,22 @@ three surfaces gain it.
 
 Data flow, source → screen:
 
-- **`llm.py`** — the *only* place model calls happen. `MODEL` constant, `.call()` for
+- **`config.py`** — key + model config. `load_env()` loads `.env` from cwd then
+  `$SYLABIS_HOME/.env` (real env always wins); `save_key()` is what `sy init` writes
+  with; `model()` honors `$SYLABIS_MODEL` at call time. Never store a key elsewhere.
+- **`gitio.py`** — bundles as git repos: `ensure_repo` (from birth, at compile),
+  `commit_all` (skip-when-clean — the idempotency contract), `publish`/`sync` (gh CLI
+  or manual recipe; ff-only pulls; the `course.published`/`course.synced` events are
+  committed *inside* the pushed history so re-runs converge). Git is an enhancement:
+  every function no-ops without it, and **git never blocks or alters a grade**.
+  Auto-commit happens ONLY on the submit paths (`cli._submit`, `tools._t_submit_work`)
+  — never in `sylabis grade` plumbing, which CI runs and which commits its own state.
+- **`llm.py`** — the *only* place model calls happen. `.call()` for
   one-shot compiler/grader stages, `.chat()` for the agent's tool-use loop. `.chat()`
   has **no mock mode by design** (you test the tools, not the conversation); `.call()`
   fully mocks. `parse_json()` strips the markdown fences LLMs add no matter what.
+  A missing key raises a friendly SystemExit here (surfaced as ToolError by tools.py);
+  `validate_key()` is the only intentionally-networked function — only `sy init` calls it.
 - **`prompts.py`** — all 8 system prompts as module constants. **Treat these as code:**
   the compiler/grader stages *are* their prompts; changing one changes pipeline behavior.
   Compiler prompts demand `Output ONLY JSON`; that contract is enforced by `parse_json`.
@@ -69,7 +82,13 @@ Data flow, source → screen:
   **Flags-and-continues — verification never blocks a compile.**
 - **`okf.py`** — owns **ALL** frontmatter/markdown production for a bundle. No other
   module writes frontmatter. The bundle on disk *is* the credential; `okf.yaml`
-  inventories every doc so a claim verifies without an external authority.
+  inventories every doc (with sha256 — tamper-evident, not signed) so a claim
+  verifies without an external authority. Two deterministic doc types carry the
+  shareable story: `grade-report` (`portfolio/reports/<mid>.md`, emitted on every
+  grade, pass or fail, values copied **verbatim** from the result — the emitter
+  formats, never computes) and `readme` (root `README.md`, the landing page GitHub
+  renders; regenerated on compile, grade, and remedial injection). Zero LLM calls,
+  zero fixtures needed.
 - **`grader.py`** — `grade()`: **Tier 1** deterministic structural → **Tier 2** claim
   audit → **Tier 3** rubric → **explain-back**. Tiers short-circuit: a Tier 1 block
   never runs Tier 2. Tier 3 has two modes: `executable` runs learner scripts
@@ -101,6 +120,14 @@ the path engine act.
   before quality judgment (Tier 3); explain-back's cap must beat a passing base score.
 - **`actuate()` is idempotent and the sole state mutator** in the path engine; re-grading
   or re-running must not stack remedials or double-emit events.
+- **Auto-commit only on submit; the `grade` plumbing never commits** — CI runs
+  `sylabis grade` and grade.yml commits its own state; a commit inside the plumbing
+  double-commits every CI run. `gitio.commit_all` skips when clean; publish/sync
+  events ride inside the pushed commit so repeated runs converge to no-ops.
+- **Grade reports and READMEs present recorded grades verbatim** — never synthesize,
+  re-derive, or embellish a number; ungraded milestones are shown, not hidden.
+- **grader.py contains no git and no publish logic**; `okf.emit_bundle_manifest` is
+  emitted LAST in `grader._write` so okf.yaml never goes stale after a grade.
 - **Tool routes refuse path traversal** (`../`, absolute, nonexistent) — see
   `tools.ToolError` and the web `doc` route; keep new routes doing the same.
 - **`okf.py` is the only frontmatter writer**; route all doc production through it.

@@ -7,7 +7,9 @@ from pathlib import Path
 
 import yaml
 
+from . import config
 from . import events
+from . import gitio
 from . import okf
 from .llm import LLM, parse_json
 from . import prompts
@@ -65,6 +67,13 @@ def compile_course(topic: str, profile: dict, out_dir: Path, llm: LLM) -> Path:
         "grader_mode": spec["viability"]["grader_mode"],
         "okf_conformant": True,  # gated: self-test failure never reaches here
     })
+    # Repos from birth: the bundle is a git repository from the moment it
+    # ships, so `sy publish` is one step and history starts at compile.
+    # Init before the event, commit after it, so the initial snapshot holds
+    # the complete event log. Git missing? The course works exactly the same.
+    if gitio.ensure_repo(out_dir):
+        events.emit(out_dir, "repo.initialized", {"branch": "main"})
+        gitio.commit_all(out_dir, f"sylabis: compile {topic}")
     print(f"\nCourse compiled: {out_dir}")
     return out_dir
 
@@ -130,6 +139,7 @@ def compile_remedial(course_dir: Path, parent_id: str, concept: str,
     (course_dir / "course.yaml").write_text(
         yaml.dump(manifest, default_flow_style=False))
     okf.emit_course_index(course_dir)
+    okf.emit_repo_readme(course_dir)  # the new milestone shows when shared
     okf.emit_bundle_manifest(course_dir)
     events.emit(course_dir, "remedial.injected",
                 {"remedial_id": rid, "parent_milestone_id": parent_id,
@@ -243,11 +253,13 @@ def _emit_repo(out: Path, topic: str, spec: dict, harvest: dict,
     # var SYLABIS_GIT_URL); see comments inside the workflow.
     wf_dir = out / ".github" / "workflows"
     wf_dir.mkdir(parents=True, exist_ok=True)
-    (wf_dir / "grade.yml").write_text(_GRADE_WORKFLOW)
+    (wf_dir / "grade.yml").write_text(
+        _GRADE_WORKFLOW.replace("__SYLABIS_REPO__", config.SYLABIS_REPO))
 
     okf.emit_knowledge_bundle(out, harvest, course_title)
     okf.emit_portfolio_index(out)
     okf.emit_course_index(out)
+    okf.emit_repo_readme(out)  # the landing page GitHub renders when shared
     okf.emit_bundle_manifest(out)  # inventories every OKF doc; emit last
 
 
@@ -264,10 +276,10 @@ _GRADE_WORKFLOW = '''\
 # GitHub IS the UI: push artifact.md + reflection.md, get graded feedback
 # as a commit (push) or a PR comment (pull request).
 #
-# One-time repo setup:
-#   1. Settings -> Secrets: add ANTHROPIC_API_KEY
-#   2. (optional) Settings -> Variables: SYLABIS_GIT_URL to pin the
-#      compiler source; defaults below.
+# The repo itself is created by `sy publish`. The only manual step left:
+#   Settings -> Secrets: add ANTHROPIC_API_KEY (or `gh secret set ...`).
+#   Until it exists this workflow exits green with a notice, not a failure.
+# (optional) Settings -> Variables: SYLABIS_GIT_URL pins the grader source.
 name: grade
 
 on:
@@ -290,18 +302,26 @@ jobs:
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
+      - name: Notice when the API key secret is not set yet
+        if: env.ANTHROPIC_API_KEY == ''
+        run: echo "::notice::Add the ANTHROPIC_API_KEY repo secret to enable auto-grading (Settings -> Secrets, or 'gh secret set ANTHROPIC_API_KEY'). Skipping."
+
       - uses: actions/checkout@v4
+        if: env.ANTHROPIC_API_KEY != ''
         with:
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
+        if: env.ANTHROPIC_API_KEY != ''
         with:
           python-version: "3.12"
 
       - name: Install sylabis
-        run: pip install "${{ vars.SYLABIS_GIT_URL || 'git+https://github.com/dhruvakrishnan/sylabis' }}"
+        if: env.ANTHROPIC_API_KEY != ''
+        run: pip install "${{ vars.SYLABIS_GIT_URL || 'git+__SYLABIS_REPO__' }}"
 
       - name: Find changed milestones
+        if: env.ANTHROPIC_API_KEY != ''
         id: changed
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -315,6 +335,7 @@ jobs:
           echo "mids=$MIDS" >> "$GITHUB_OUTPUT"
 
       - name: Grade changed milestones
+        if: env.ANTHROPIC_API_KEY != ''
         id: grade
         run: |
           : > /tmp/grade-report.md
@@ -331,13 +352,13 @@ jobs:
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
 
       - name: Post feedback as PR comment
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && env.ANTHROPIC_API_KEY != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/grade-report.md
 
       - name: Commit grade state
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && env.ANTHROPIC_API_KEY != ''
         run: |
           git config user.name "sylabis-grader"
           git config user.email "grader@users.noreply.github.com"

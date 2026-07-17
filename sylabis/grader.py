@@ -42,7 +42,7 @@ def grade(course_dir: Path, milestone_id: str, llm: LLM,
         result["failure_flags"] = [f"missing_file:{f}" for f in missing]
         result["feedback"] = ("Structural check failed. Missing: "
                               + ", ".join(missing))
-        _write(m_dir, course_dir, result)
+        _write(m_dir, course_dir, result, checkpoint)
         return result
     result["tier_1_passed"] = True
 
@@ -60,7 +60,7 @@ def grade(course_dir: Path, milestone_id: str, llm: LLM,
             result["feedback"] = "Claim audit failed:\n" + "\n".join(
                 f'  - "{c["text"][:80]}" [{c["flag"]}] {c["feedback"]}'
                 for c in failed)
-            _write(m_dir, course_dir, result)
+            _write(m_dir, course_dir, result, checkpoint)
             return result
         result["tier_2_passed"] = True
 
@@ -124,7 +124,7 @@ def grade(course_dir: Path, milestone_id: str, llm: LLM,
         _update_portfolio(course_dir, result, checkpoint)
         okf.emit_claim_doc(course_dir, checkpoint, result)
         okf.emit_portfolio_index(course_dir)
-    _write(m_dir, course_dir, result)
+    _write(m_dir, course_dir, result, checkpoint)
     if result["passed"]:
         _maybe_complete_course(course_dir)
     return result
@@ -230,14 +230,34 @@ def _next_attempt(m_dir: Path) -> int:
     return 1
 
 
-def _write(m_dir: Path, course_dir: Path, result: dict) -> None:
+def _write(m_dir: Path, course_dir: Path, result: dict,
+           checkpoint: dict) -> None:
+    """Persist one grading, then refresh everything derived from it. The
+    order is load-bearing: the event lands before the report (so the
+    report's history table includes this attempt) and okf.yaml is emitted
+    LAST so the bundle manifest never goes stale after a grade. No git and
+    no LLM calls in this module — CI commits grade state itself."""
     (m_dir / "grade.yaml").write_text(yaml.dump(result, default_flow_style=False))
     events.emit(course_dir, "milestone.graded", {
-        k: result.get(k) for k in
-        ("milestone_id", "grade", "passed", "attempt",
-         "failure_flags", "hours_actual")})
+        **{k: result.get(k) for k in
+           ("milestone_id", "grade", "passed", "attempt",
+            "failure_flags", "hours_actual")},
+        "hours_estimated": _estimated_hours(course_dir,
+                                            result["milestone_id"])})
+    okf.emit_grade_report(course_dir, checkpoint, result)
     if (course_dir / "course.yaml").exists():
+        okf.emit_repo_readme(course_dir)   # the shareable landing page
         okf.emit_course_index(course_dir)  # progress shows in the index
+        okf.emit_bundle_manifest(course_dir)
+
+
+def _estimated_hours(course_dir: Path, milestone_id: str) -> float | None:
+    mpath = Path(course_dir) / "course.yaml"
+    if not mpath.exists():
+        return None
+    milestones = (yaml.safe_load(mpath.read_text()) or {}).get("milestones", [])
+    m = next((m for m in milestones if m["id"] == milestone_id), None)
+    return m.get("estimated_hours") if m else None
 
 
 def _update_portfolio(course_dir: Path, result: dict, checkpoint: dict) -> None:

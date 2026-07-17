@@ -13,11 +13,19 @@ Document types:
   competency-evidence  portfolio/claims/<milestone>.md
   portfolio            portfolio/index.md
   journey              <journey home>/knowledge.md (cross-course, journey.py)
+  grade-report         portfolio/reports/<milestone>.md — the shareable,
+                       self-contained record of one grading (pass or fail)
+  readme               README.md at the bundle root — what GitHub renders
+                       when a published course is shared by its repo URL
 """
+import hashlib
+import json
 import time
 from pathlib import Path
 
 import yaml
+
+from . import config
 
 OKF_VERSION = 1
 # Frontmatter descriptions are summaries, not content. If truncation loses
@@ -25,7 +33,8 @@ OKF_VERSION = 1
 DESCRIPTION_LIMIT = 120
 
 DOC_TYPES = ("course", "milestone", "source", "knowledge-bundle",
-             "competency-evidence", "portfolio", "journey")
+             "competency-evidence", "portfolio", "journey",
+             "grade-report", "readme")
 
 
 def _now() -> str:
@@ -281,6 +290,218 @@ def emit_portfolio_index(course_dir: Path) -> Path:
     )
 
 
+def pct(value) -> str:
+    """One percent formatter for report, README, and index — the numbers a
+    learner shares must never drift between documents."""
+    return f"{float(value or 0):.0%}"
+
+
+def badge_markdown(grade: float, passed: bool) -> str:
+    """A static shields.io badge line — pure string formatting; sylabis
+    never fetches it, GitHub's renderer does."""
+    label = pct(grade).replace("%", "%25")
+    if passed:
+        color = "brightgreen" if grade >= 0.90 else "green"
+        text = "passed"
+    else:
+        color, text = "red", "not yet"
+    return (f"![grade: {pct(grade)} — {text}]"
+            f"(https://img.shields.io/badge/grade-{label}_{text.replace(' ', '_')}-{color})")
+
+
+def _sha256(path: Path) -> str | None:
+    path = Path(path)
+    if not path.exists():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _grade_history(course_dir: Path, milestone_id: str) -> list[dict]:
+    """Every attempt of one milestone, reconstructed from the append-only
+    event log — the only place attempt history survives grade.yaml's
+    overwrite. Degrades to [] on a damaged log; a report nicety must never
+    crash grading."""
+    log = Path(course_dir) / "events.jsonl"
+    if not log.exists():
+        return []
+    rows = []
+    try:
+        for line in log.read_text().splitlines():
+            e = json.loads(line)
+            if e.get("type") == "milestone.graded" and \
+                    e.get("payload", {}).get("milestone_id") == milestone_id:
+                rows.append({"ts": e.get("ts", ""), **e["payload"]})
+    except (json.JSONDecodeError, TypeError, KeyError):
+        return []
+    return rows
+
+
+def emit_grade_report(course_dir: Path, checkpoint: dict, result: dict) -> Path:
+    """The shareable grade record: portfolio/reports/<milestone>.md, one per
+    milestone, overwritten per attempt exactly like grade.yaml (history
+    lives in the table below, from events.jsonl). Every value is copied
+    verbatim from the grade result — this emitter formats, never computes
+    or re-derives a score."""
+    course_dir = Path(course_dir)
+    mid = result["milestone_id"]
+    body = [f"# Grade report — {mid}", "",
+            badge_markdown(result["grade"], result["passed"]), "",
+            f"**{pct(result['grade'])} — "
+            f"{'PASSED' if result['passed'] else 'NOT YET'}** · "
+            f"attempt {result['attempt']} · graded {result['graded_at']}", ""]
+
+    body += ["## Tiers", "",
+             "| Check | Result |", "|---|---|",
+             f"| Tier 1 — structural | "
+             f"{'passed' if result.get('tier_1_passed') else 'FAILED'} |"]
+    if "claim_audit" in result:
+        s = result["claim_audit"]
+        body.append(f"| Tier 2 — claim audit | "
+                    f"{'passed' if result.get('tier_2_passed') else 'FAILED'}"
+                    f" ({s['passed']}/{s['total']} claims) |")
+    if result.get("tier_3_mode"):
+        body.append(f"| Tier 3 — rubric ({result['tier_3_mode']}) | "
+                    f"{pct(result['grade'])} |")
+    for d in (result.get("tier_3") or {}).get("dimensions", []):
+        body.append(f"| &nbsp;&nbsp;· {d['name']} | {d['score']:.2f} "
+                    f"(nearest: {d.get('nearest_exemplar', '?')}) |")
+    for note in result.get("rubric_scripts", []):
+        body.append(f"| &nbsp;&nbsp;· script | {note} |")
+
+    if result.get("explain_back"):
+        body += ["", "## Explain-back", ""]
+        for p in result["explain_back"]:
+            body.append(f"- **{p['concept']}** — {p['verdict']}")
+            if p["verdict"] != "understood" and p.get("followup_question"):
+                body.append(f"  - Next question to sit with: "
+                            f"{p['followup_question']}")
+    if result.get("failure_flags"):
+        body += ["", "## Flags", ""]
+        body += [f"- `{f}`" for f in result["failure_flags"]]
+    if result.get("verified_claims"):
+        body += ["", "## Verified claims", ""]
+        body += [f"- {c}" for c in result["verified_claims"]]
+
+    history = _grade_history(course_dir, mid)
+    if history:
+        body += ["", "## Attempt history", "",
+                 "| Attempt | Grade | Result | When |", "|---|---|---|---|"]
+        body += [f"| {h.get('attempt')} | {pct(h.get('grade'))} | "
+                 f"{'passed' if h.get('passed') else 'not yet'} | "
+                 f"{h.get('ts')} |" for h in history]
+
+    art_sha = _sha256(course_dir / mid / "artifact.md")
+    refl_sha = _sha256(course_dir / mid / "reflection.md")
+    body += ["", "## Evidence", "",
+             f"- Artifact: [`{mid}/artifact.md`](../../{mid}/artifact.md)"
+             + (f" — sha256 `{art_sha}`" if art_sha else ""),
+             f"- Reflection: [`{mid}/reflection.md`](../../{mid}/reflection.md)"
+             + (f" — sha256 `{refl_sha}`" if refl_sha else ""),
+             f"- Grade record: [`{mid}/grade.yaml`](../../{mid}/grade.yaml)",
+             f"- Event log: [`events.jsonl`](../../events.jsonl)", "",
+             "## How to verify", "",
+             "This report is tamper-evident, not signed: recompute the "
+             "sha256 of the artifact and reflection and compare them to the "
+             "hashes above, read the append-only `events.jsonl` for the "
+             "full grading history, and for CI-graded attempts inspect the "
+             "repository's git log and the Actions run that produced the "
+             "grade commit."]
+
+    return write_doc(
+        course_dir / "portfolio" / "reports" / f"{mid}.md",
+        "grade-report", f"Grade report — {mid}",
+        f"{pct(result['grade'])} "
+        f"{'passed' if result['passed'] else 'not yet'}, "
+        f"attempt {result['attempt']}",
+        "\n".join(body),
+        milestone_id=mid,
+        attempt=result["attempt"],
+        grade=result["grade"],
+        passed=result["passed"],
+        graded_at=result["graded_at"],
+        tier_1_passed=result.get("tier_1_passed", False),
+        tier_2_passed=result.get("tier_2_passed", False),
+        tier_3_mode=result.get("tier_3_mode"),
+        artifact_type=checkpoint.get("artifact_type", ""),
+        artifact_sha256=art_sha,
+        reflection_sha256=refl_sha,
+    )
+
+
+def emit_repo_readme(course_dir: Path) -> Path:
+    """README.md at the bundle root — the landing page GitHub renders when
+    a published course is shared by its bare repo URL. Outward-facing where
+    index.md is learner-facing. Regenerable from disk state alone; a
+    half-graded bundle must render, not crash."""
+    course_dir = Path(course_dir)
+    manifest = yaml.safe_load((course_dir / "course.yaml").read_text())
+    meta = manifest["meta"]
+    milestones = manifest.get("milestones", [])
+
+    passed, concepts = 0, set()
+    rows = []
+    for m in milestones:
+        gpath = course_dir / m["id"] / "grade.yaml"
+        g = (yaml.safe_load(gpath.read_text()) or {}) if gpath.exists() else {}
+        if g.get("passed"):
+            passed += 1
+            cp_path = course_dir / m["id"] / "checkpoint.yaml"
+            if cp_path.exists():
+                cp = yaml.safe_load(cp_path.read_text()) or {}
+                concepts.update(cp.get("core_concepts") or [])
+            rows.append(f"- [x] [{m['id']} — {m['title']}]({m['id']}/LESSON.md)"
+                        f" — passed {pct(g.get('grade'))} "
+                        f"([report](portfolio/reports/{m['id']}.md))")
+        elif g:
+            rows.append(f"- [ ] [{m['id']} — {m['title']}]({m['id']}/LESSON.md)"
+                        f" — attempt {g.get('attempt', 1)}, not yet "
+                        f"([report](portfolio/reports/{m['id']}.md))")
+        else:
+            # Honest completeness: hiding unfinished work is embellishment.
+            rows.append(f"- [ ] [{m['id']} — {m['title']}]({m['id']}/LESSON.md)"
+                        f" — not yet attempted")
+
+    total = len(milestones)
+    badges = (f"![milestones](https://img.shields.io/badge/"
+              f"milestones-{passed}%2F{total}-"
+              f"{'brightgreen' if total and passed == total else 'blue'}) "
+              f"![verified concepts](https://img.shields.io/badge/"
+              f"verified_concepts-{len(concepts)}-blue)")
+
+    body = [f"# {meta['title']}", "", badges, "",
+            manifest.get("learner", {}).get("target_artifact", ""), "",
+            f"A [sylabis]({config.SYLABIS_REPO}) course bundle — "
+            f"compiled {meta.get('compiled_at', '')}, graded milestone by "
+            f"milestone from the real artifacts in this repository.", "",
+            "## Milestones", ""]
+    body += rows
+    body += ["", "## In this repository", "",
+             "- [Course index](index.md) — the learner-facing overview",
+             "- [Portfolio](portfolio/index.md) — verified competency claims",
+             "- [Grade reports](portfolio/reports/) — one shareable report "
+             "per milestone",
+             "- [Knowledge base](knowledge/index.md) — the primary sources",
+             "- `events.jsonl` — the append-only grading history", "",
+             "## Attestation", "",
+             "Grades are produced by `sylabis grade` (three deterministic-"
+             "first tiers plus an explain-back check). Pushes of work are "
+             "graded by CI (`.github/workflows/grade.yml`); those grade "
+             "commits are authored by `sylabis-grader` with the run "
+             "recorded in the Actions tab. Each grade report carries the "
+             "sha256 of the artifact it graded. This repository includes "
+             "the learner's working notes and reflections, not just the "
+             "results."]
+
+    return write_doc(
+        course_dir / "README.md", "readme", meta["title"],
+        manifest.get("learner", {}).get("target_artifact", meta["title"]),
+        "\n".join(body),
+        milestones_passed=passed,
+        milestone_count=total,
+        concept_count=len(concepts),
+    )
+
+
 # ----------------------------------------------------------------- manifest
 
 def emit_bundle_manifest(course_dir: Path) -> Path:
@@ -289,12 +510,17 @@ def emit_bundle_manifest(course_dir: Path) -> Path:
     course_dir = Path(course_dir)
     documents = []
     for md in sorted(course_dir.rglob("*.md")):
+        if ".git" in md.relative_to(course_dir).parts:
+            continue
         meta, _ = parse_doc(md)
         if meta and meta.get("okf") == OKF_VERSION and meta.get("type") in DOC_TYPES:
             documents.append({
                 "path": str(md.relative_to(course_dir)),
                 "type": meta["type"],
                 "title": meta.get("title", ""),
+                # the tamper-evidence anchor: edit a doc after emission and
+                # conformance flags the mismatch
+                "sha256": _sha256(md),
             })
     manifest = {
         "okf": OKF_VERSION,
@@ -360,13 +586,40 @@ def conformance_problems(course_dir: Path) -> list[str]:
             if not doc.exists():
                 problems.append(f"OKF: knowledge/source-{s['id']}.md missing")
 
+    readme = course_dir / "README.md"
+    if readme.exists():
+        # Never required (old bundles predate it) but when present it must
+        # be the outward-facing OKF doc, not a stray file.
+        meta, _ = parse_doc(readme)
+        if meta is None or meta.get("type") != "readme":
+            problems.append("OKF: README.md is not a 'readme' OKF document")
+
     okf_yaml = course_dir / "okf.yaml"
     if not okf_yaml.exists():
         problems.append("OKF: okf.yaml bundle manifest missing")
     else:
         inventory = yaml.safe_load(okf_yaml.read_text()) or {}
+        listed = set()
         for d in inventory.get("documents", []):
-            if not (course_dir / d["path"]).exists():
+            listed.add(d["path"])
+            doc = course_dir / d["path"]
+            if not doc.exists():
                 problems.append(f"OKF: okf.yaml lists {d['path']} "
                                 f"but it is not on disk")
+            elif d.get("sha256") and _sha256(doc) != d["sha256"]:
+                # hash-less entries (legacy manifests) stay conformant
+                problems.append(f"OKF: {d['path']} was modified after "
+                                f"okf.yaml was emitted (hash mismatch)")
+        # The other direction: an OKF doc on disk that the inventory
+        # doesn't know about is a hole in the credential.
+        for md in sorted(course_dir.rglob("*.md")):
+            rel = md.relative_to(course_dir)
+            if ".git" in rel.parts:
+                continue
+            meta, _ = parse_doc(md)
+            if (meta and meta.get("okf") == OKF_VERSION
+                    and meta.get("type") in DOC_TYPES
+                    and str(rel) not in listed):
+                problems.append(f"OKF: {rel} is on disk but missing "
+                                f"from okf.yaml")
     return problems

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import yaml
 
+from . import gitio
 from . import okf
 
 COURSES_SUBDIR = "courses"
@@ -217,6 +218,13 @@ def emit_map(home_dir: Path) -> Path | None:
             if len(names) < 2:  # identical titles: fall back to dir names
                 names = sorted({ev["course"] for ev in e["evidence"]})
             lines.append(f"- **{e['concept']}** links {' and '.join(names)}")
+
+    shared = [(c.name, gitio.web_url(gitio.remote_url(c)))
+              for c in dirs if gitio.is_repo(c)]
+    shared = [(n, u) for n, u in shared if u]
+    if shared:
+        lines += ["", "## Shared", ""]
+        lines += [f"- [{n}]({u}) — published on GitHub" for n, u in shared]
 
     return okf.write_doc(
         home_dir / "knowledge.md", "journey", "Knowledge map",

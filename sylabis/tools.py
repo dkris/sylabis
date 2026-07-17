@@ -11,6 +11,7 @@ from pathlib import Path
 import yaml
 
 from . import events
+from . import gitio
 from . import journey
 from .llm import LLM
 
@@ -47,7 +48,13 @@ class JourneyTools:
 
     def _llm(self) -> LLM:
         if self._llm_instance is None:
-            self._llm_instance = LLM(mock=self.mock)
+            try:
+                self._llm_instance = LLM(mock=self.mock)
+            except SystemExit as e:
+                # One choke point: a missing key becomes a recoverable tool
+                # result on every surface (agent, web, MCP), never process
+                # death — MCP stdout must stay JSON-RPC-clean.
+                raise ToolError(str(e))
         return self._llm_instance
 
     # ------------------------------------------------------------ file access
@@ -160,7 +167,48 @@ class JourneyTools:
             lines.append(f"  - {d['action']} -> {d.get('target', '')}")
         for a in actions:
             lines.append(f"  {a}")
+        # After actuate(), so remedials land in the same commit. Never in
+        # the grade plumbing itself — CI commits its own grade state.
+        if gitio.commit_all(cdir, f"grade: {mid} attempt {result['attempt']}"
+                                  f" — {'passed' if result['passed'] else 'not yet'}"
+                                  f" {result['grade']:.0%}"):
+            lines.append("Committed to course history.")
         return "\n".join(lines)
+
+    def _t_get_report(self, args: dict) -> str:
+        cdir = self._course_dir(args["course"])
+        mid = _safe_id(args["milestone_id"], "milestone_id")
+        # Verbatim by construction: the report was written at grade time and
+        # is only ever read back — never paraphrase a grade.
+        return self._read(cdir, f"portfolio/reports/{mid}.md",
+                          f"No grade report for {mid!r} yet — grade it first "
+                          f"with submit_work.")
+
+    def _t_publish_course(self, args: dict) -> str:
+        cdir = self._course_dir(args["course"])
+        try:
+            out = gitio.publish(cdir, repo_url=args.get("repo_url"))
+        except gitio.GitError as e:
+            # The no-remote GitError IS the instruction set — return it so
+            # the agent can relay the next steps conversationally.
+            return str(e)
+        url = gitio.web_url(out["remote"]) or out["remote"]
+        return (f"Published {cdir.name!r} to {url}\n"
+                f"Auto-grading needs the ANTHROPIC_API_KEY repo secret "
+                f"(Settings -> Secrets). Share the course at: {url}")
+
+    def _t_sync_course(self, args: dict) -> str:
+        cdir = self._course_dir(args["course"])
+        try:
+            out = gitio.sync(cdir)
+        except gitio.GitError as e:
+            raise ToolError(str(e))
+        if out["pulled"] or out["pushed"]:
+            journey.emit_map(self.home)
+            return (f"Synced {cdir.name}: "
+                    + ("pulled new grades; " if out["pulled"] else "")
+                    + ("pushed local work" if out["pushed"] else ""))
+        return f"{cdir.name} is up to date."
 
     def _t_knowledge_map(self, args: dict) -> str:
         know = journey.knowledge(self.home)
@@ -264,6 +312,26 @@ class JourneyTools:
             "progress": (
                 self._t_progress,
                 "Per-milestone grade status for one course.",
+                obj(s_course, ["course"])),
+            "get_report": (
+                self._t_get_report,
+                "Read the shareable grade report for a graded milestone. "
+                "Show it verbatim — never paraphrase a grade.",
+                obj({**s_course, **s_mid}, ["course", "milestone_id"])),
+            "publish_course": (
+                self._t_publish_course,
+                "Put a course on GitHub: commit everything and push. Wires "
+                "the remote via the gh CLI or repo_url; without either it "
+                "returns the manual steps to relay to the learner.",
+                obj({**s_course,
+                     "repo_url": {"type": "string",
+                                  "description": "Existing empty repo URL "
+                                                 "to push to (optional)."}},
+                    ["course"])),
+            "sync_course": (
+                self._t_sync_course,
+                "Sync a published course with its GitHub repo: push local "
+                "work, pull CI-graded state.",
                 obj(s_course, ["course"])),
             "list_sources": (
                 self._t_list_sources,
