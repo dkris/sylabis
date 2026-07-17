@@ -1,0 +1,491 @@
+<title>sylabis — architecture</title>
+<style>
+  :root {
+    --paper:   #ECE5D4;
+    --panel:   #F7F2E7;
+    --panel-2: #E3DBC7;
+    --ink:     #221E17;
+    --ink-soft:#574F41;
+    --ink-faint:#877E6B;
+    --line:    #C7BCA1;
+    --line-2:  #ADA184;
+    --garnet:  #8A2B34;
+    --garnet-2:#A6494F;
+    --slate:   #33565A;
+    --good:    #3E6B4A;
+    --shadow:  0 1px 0 rgba(34,30,23,.04), 0 8px 24px -18px rgba(34,30,23,.5);
+    --disp: "Didot","Bodoni 72","Bodoni MT","Playfair Display",Georgia,"Times New Roman",serif;
+    --body: Georgia,"Iowan Old Style","Palatino Linotype",serif;
+    --mono: "SF Mono","JetBrains Mono","IBM Plex Mono",ui-monospace,"Cascadia Code",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:   #14110B;
+      --panel:   #1E1A12;
+      --panel-2: #100D08;
+      --ink:     #ECE4D2;
+      --ink-soft:#B3AA95;
+      --ink-faint:#847B62;
+      --line:    #362F22;
+      --line-2:  #4A4130;
+      --garnet:  #DB868C;
+      --garnet-2:#C56A71;
+      --slate:   #7FB0AD;
+      --good:    #7FB58C;
+      --shadow:  0 1px 0 rgba(0,0,0,.3), 0 12px 30px -20px rgba(0,0,0,.8);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:#14110B; --panel:#1E1A12; --panel-2:#100D08;
+    --ink:#ECE4D2; --ink-soft:#B3AA95; --ink-faint:#847B62;
+    --line:#362F22; --line-2:#4A4130; --garnet:#DB868C; --garnet-2:#C56A71;
+    --slate:#7FB0AD; --good:#7FB58C;
+    --shadow:0 1px 0 rgba(0,0,0,.3), 0 12px 30px -20px rgba(0,0,0,.8);
+  }
+  :root[data-theme="light"] {
+    --paper:#ECE5D4; --panel:#F7F2E7; --panel-2:#E3DBC7;
+    --ink:#221E17; --ink-soft:#574F41; --ink-faint:#877E6B;
+    --line:#C7BCA1; --line-2:#ADA184; --garnet:#8A2B34; --garnet-2:#A6494F;
+    --slate:#33565A; --good:#3E6B4A;
+    --shadow:0 1px 0 rgba(34,30,23,.04), 0 8px 24px -18px rgba(34,30,23,.5);
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 500px at 50% -10%, color-mix(in oklab, var(--panel) 60%, transparent), transparent 70%),
+      var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1140px; margin: 0 auto; padding: clamp(28px,5vw,72px) clamp(18px,4vw,40px) 80px; }
+
+  /* ---- masthead ---- */
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .72rem; letter-spacing: .34em; text-transform: uppercase;
+    color: var(--garnet); margin: 0 0 14px;
+  }
+  h1 {
+    font-family: var(--disp);
+    font-weight: 400;
+    font-size: clamp(3rem, 9vw, 5.6rem);
+    line-height: .92; letter-spacing: -.01em;
+    margin: 0; text-wrap: balance;
+  }
+  h1 .dot { color: var(--garnet); }
+  .lede {
+    font-family: var(--disp); font-style: italic;
+    font-size: clamp(1.15rem, 2.4vw, 1.5rem);
+    color: var(--ink-soft); max-width: 46ch; margin: 18px 0 0;
+    text-wrap: balance;
+  }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 26px; }
+  .chip {
+    font-family: var(--mono); font-size: .7rem; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--ink-soft);
+    border: 1px solid var(--line-2); border-radius: 100px;
+    padding: 5px 12px; background: color-mix(in oklab, var(--panel) 70%, transparent);
+  }
+  .rule { height: 1px; background: var(--line-2); border: 0; margin: 40px 0; }
+
+  /* ---- band scaffolding ---- */
+  .band { margin-top: 8px; }
+  .band-head {
+    display: flex; align-items: baseline; gap: 14px;
+    margin: 0 0 18px;
+  }
+  .band-num {
+    font-family: var(--mono); font-size: .72rem; letter-spacing: .1em;
+    color: var(--garnet); border: 1px solid var(--garnet);
+    border-radius: 4px; padding: 3px 7px; line-height: 1;
+  }
+  .band-title {
+    font-family: var(--mono); font-size: .82rem; letter-spacing: .22em;
+    text-transform: uppercase; color: var(--ink); margin: 0; font-weight: 400;
+  }
+  .band-note {
+    font-family: var(--disp); font-style: italic; color: var(--ink-faint);
+    font-size: .98rem; margin-left: auto; text-align: right; max-width: 34ch;
+  }
+
+  /* ---- cards ---- */
+  .grid { display: grid; gap: 14px; }
+  .g3 { grid-template-columns: repeat(3, 1fr); }
+  .g4 { grid-template-columns: repeat(4, 1fr); }
+  .g5 { grid-template-columns: repeat(5, 1fr); }
+  @media (max-width: 880px) { .g3,.g4,.g5 { grid-template-columns: repeat(2,1fr); } }
+  @media (max-width: 560px) { .g3,.g4,.g5 { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px 16px 18px; box-shadow: var(--shadow);
+    position: relative; min-width: 0;
+  }
+  .card.tall { padding-bottom: 16px; }
+  .fname {
+    font-family: var(--mono); font-size: .86rem; color: var(--ink);
+    letter-spacing: .01em; display: inline-block;
+  }
+  .role {
+    font-family: var(--mono); font-size: .62rem; letter-spacing: .18em;
+    text-transform: uppercase; color: var(--garnet); margin: 0 0 9px;
+  }
+  .card p { margin: 8px 0 0; font-size: .92rem; color: var(--ink-soft); }
+  .card p.tight { margin-top: 6px; }
+
+  /* pipeline / sequence steps */
+  .seq { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 12px; align-items: center; }
+  .seq .step {
+    font-family: var(--mono); font-size: .68rem; color: var(--ink);
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 5px; padding: 3px 7px; white-space: nowrap;
+  }
+  .seq .arw { color: var(--ink-faint); font-family: var(--mono); font-size: .7rem; }
+  .seq .gate { border-color: var(--garnet); color: var(--garnet); }
+
+  .taglist { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; }
+  .tag {
+    font-family: var(--mono); font-size: .68rem; color: var(--ink-soft);
+    border: 1px dashed var(--line-2); border-radius: 5px; padding: 3px 7px;
+  }
+
+  /* ---- convergence funnel (SVG) ---- */
+  .flow { display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 14px 0; }
+  .flow svg { width: min(560px, 90%); height: auto; display: block; color: var(--line-2); }
+  .flow-label {
+    font-family: var(--mono); font-size: .64rem; letter-spacing: .24em;
+    text-transform: uppercase; color: var(--ink-faint);
+  }
+
+  /* ---- registry bar ---- */
+  .registry {
+    background: var(--ink); color: var(--paper);
+    border-radius: 12px; padding: 22px clamp(18px,3vw,30px);
+    box-shadow: var(--shadow);
+  }
+  .registry .role { color: var(--garnet-2); }
+  .registry .fname { color: var(--paper); font-size: 1.05rem; }
+  .registry p { color: color-mix(in oklab, var(--paper) 78%, transparent); font-size: .94rem; }
+  .toolrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+  .tool {
+    font-family: var(--mono); font-size: .72rem; letter-spacing: .02em;
+    color: var(--paper);
+    border: 1px solid color-mix(in oklab, var(--paper) 32%, transparent);
+    border-radius: 6px; padding: 4px 9px;
+  }
+  .tool.legacy { color: color-mix(in oklab,var(--paper) 55%, transparent); border-style: dashed; }
+
+  /* ---- disk band ---- */
+  .disk {
+    background: var(--panel-2);
+    border: 1px solid var(--line-2); border-radius: 12px; padding: 18px;
+  }
+  .disk-note { font-family: var(--disp); font-style: italic; color: var(--slate); margin: 0 0 14px; font-size: 1rem; }
+  .tree {
+    font-family: var(--mono); font-size: .78rem; line-height: 1.85;
+    color: var(--ink-soft); margin: 0; white-space: pre; overflow-x: auto;
+  }
+  .tree b { color: var(--ink); font-weight: 400; }
+  .tree .c { color: var(--ink-faint); }
+  .tree .k { color: var(--garnet); }
+
+  /* ---- loop strip ---- */
+  .loop {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 8px;
+    justify-content: center; margin: 4px 0 0;
+  }
+  .loop .v {
+    font-family: var(--disp); font-size: clamp(1.1rem,2.6vw,1.6rem);
+    color: var(--ink);
+  }
+  .loop .v i { color: var(--garnet); font-style: normal; }
+  .loop .sep { color: var(--line-2); font-family: var(--mono); }
+
+  /* ---- invariants ---- */
+  .rules { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+  @media (max-width: 780px){ .rules { grid-template-columns: 1fr; } }
+  .rules li {
+    list-style: none; font-size: .9rem; color: var(--ink-soft);
+    border-left: 2px solid var(--garnet); padding: 2px 0 2px 12px;
+  }
+  .rules b { color: var(--ink); font-weight: 400; font-family: var(--disp); font-style: italic; }
+  ul.rules { padding: 0; margin: 0; }
+
+  footer {
+    margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line-2);
+    font-family: var(--mono); font-size: .7rem; letter-spacing: .06em;
+    color: var(--ink-faint); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+  }
+
+  .band, .registry, .disk { animation: rise .6s cubic-bezier(.2,.7,.2,1) both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .band, .registry, .disk { animation: none; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="band">
+    <p class="eyebrow">Architecture · the learning agent</p>
+    <h1>sylabis<span class="dot">.</span></h1>
+    <p class="lede">Three doors, one core, and no database — a course is a directory you can read.</p>
+    <div class="meta">
+      <span class="chip">Python 3.10+</span>
+      <span class="chip">4 runtime deps</span>
+      <span class="chip">state = files on disk</span>
+      <span class="chip">offline, deterministic tests</span>
+    </div>
+  </header>
+
+  <hr class="rule">
+
+  <!-- BAND 1 — SURFACES -->
+  <section class="band">
+    <div class="band-head">
+      <span class="band-num">01</span>
+      <h2 class="band-title">Surfaces — three doors</h2>
+      <span class="band-note">Same powers through every door. Add a capability once; all three gain it.</span>
+    </div>
+    <div class="grid g3">
+      <div class="card">
+        <p class="role">terminal</p>
+        <span class="fname">agent.py · console.py</span>
+        <p>A real streaming tool-use loop: prose streams live, each tool call renders as a trace line, Ctrl-C abandons a turn cleanly.</p>
+      </div>
+      <div class="card">
+        <p class="role">browser</p>
+        <span class="fname">web.py</span>
+        <p>The Reading Room — a stdlib web app, 127.0.0.1 only. Compile, read lessons, submit work, read tiered grades; Sy waits behind a tab.</p>
+      </div>
+      <div class="card">
+        <p class="role">mcp client</p>
+        <span class="fname">mcp_server.py</span>
+        <p>Stdio server. Any MCP client (e.g. Claude Desktop) drives the whole journey — or a single legacy per-course bundle.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- converge -->
+  <div class="flow" aria-hidden="true">
+    <svg viewBox="0 0 560 60" fill="none" stroke="currentColor" stroke-width="1.4">
+      <path d="M93 4 C 93 40, 280 24, 280 56" />
+      <path d="M280 4 L 280 56" />
+      <path d="M467 4 C 467 40, 280 24, 280 56" />
+      <circle cx="280" cy="56" r="3.2" fill="var(--garnet)" stroke="none" />
+    </svg>
+    <span class="flow-label">converge on one registry</span>
+  </div>
+
+  <!-- REGISTRY -->
+  <section class="band">
+    <div class="registry">
+      <p class="role">the shared surface</p>
+      <span class="fname">tools.py — journey-scoped tool registry</span>
+      <p>One registry backs all three doors. The journey scope is primary; a per-course scope stays for existing bundles.</p>
+      <div class="toolrow">
+        <span class="tool">journey</span>
+        <span class="tool">next_step</span>
+        <span class="tool">start_course</span>
+        <span class="tool">get_lesson</span>
+        <span class="tool">submit_work</span>
+        <span class="tool">knowledge_map</span>
+        <span class="tool">progress</span>
+        <span class="tool">list_sources</span>
+        <span class="tool">get_source</span>
+        <span class="tool legacy">course_overview ·legacy</span>
+        <span class="tool legacy">submit_artifact ·legacy</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="flow" aria-hidden="true">
+    <svg viewBox="0 0 560 44" fill="none" stroke="currentColor" stroke-width="1.4">
+      <path d="M280 2 L 280 38" />
+      <path d="M272 30 L 280 40 L 288 30" stroke="var(--garnet)" />
+    </svg>
+    <span class="flow-label">tools drive the core</span>
+  </div>
+
+  <!-- BAND 2 — CORE ENGINE -->
+  <section class="band">
+    <div class="band-head">
+      <span class="band-num">02</span>
+      <h2 class="band-title">Core engine</h2>
+      <span class="band-note">Compile a course, teach it, grade real artifacts, adapt the path, connect the knowledge.</span>
+    </div>
+    <div class="grid g4">
+      <div class="card tall">
+        <p class="role">compile</p>
+        <span class="fname">compiler.py</span>
+        <p class="tight">Topic → course bundle. Intake's viability check can <em>decline</em>; self-test gates shipping.</p>
+        <div class="seq">
+          <span class="step">intake</span><span class="arw">→</span>
+          <span class="step">harvest</span><span class="arw">→</span>
+          <span class="step">sequence</span><span class="arw">→</span>
+          <span class="step">emit</span><span class="arw">→</span>
+          <span class="step gate">self-test</span>
+        </div>
+      </div>
+      <div class="card tall">
+        <p class="role">grade</p>
+        <span class="fname">grader.py</span>
+        <p class="tight">Four gates, short-circuiting. A Tier&nbsp;1 block never reaches Tier&nbsp;2.</p>
+        <div class="seq">
+          <span class="step">T1 structural</span><span class="arw">→</span>
+          <span class="step">T2 claim audit</span><span class="arw">→</span>
+          <span class="step">T3 rubric</span><span class="arw">→</span>
+          <span class="step gate">explain-back cap</span>
+        </div>
+      </div>
+      <div class="card tall">
+        <p class="role">adapt</p>
+        <span class="fname">path_engine.py</span>
+        <p class="tight">A legible rules table, not a model. <code>actuate()</code> is idempotent and the sole state mutator.</p>
+        <div class="seq">
+          <span class="step">decide()</span><span class="arw">→</span>
+          <span class="step">actuate()</span>
+        </div>
+        <div class="taglist">
+          <span class="tag">unlock sidequest</span>
+          <span class="tag">inject remedial</span>
+        </div>
+      </div>
+      <div class="card tall">
+        <p class="role">connect</p>
+        <span class="fname">journey.py</span>
+        <p class="tight">Reads bundles, never copies. Concepts proven in one course become assumed knowledge in the next.</p>
+        <div class="taglist">
+          <span class="tag">knowledge()</span>
+          <span class="tag">prior_knowledge()</span>
+          <span class="tag">attach()</span>
+          <span class="tag">emit_map()</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="flow" aria-hidden="true">
+    <svg viewBox="0 0 560 44" fill="none" stroke="currentColor" stroke-width="1.4">
+      <path d="M280 2 L 280 38" />
+      <path d="M272 30 L 280 40 L 288 30" stroke="var(--garnet)" />
+    </svg>
+    <span class="flow-label">every module rests on the foundation</span>
+  </div>
+
+  <!-- BAND 3 — FOUNDATION -->
+  <section class="band">
+    <div class="band-head">
+      <span class="band-num">03</span>
+      <h2 class="band-title">Shared foundation</h2>
+      <span class="band-note">The invariants live here — one model gate, one prompt set, one frontmatter writer.</span>
+    </div>
+    <div class="grid g5">
+      <div class="card">
+        <p class="role">model gate</p>
+        <span class="fname">llm.py</span>
+        <p>The only place model calls happen. <code>.call()</code> mocks from fixtures; <code>.chat()</code> is the live agent loop — no mock, by design.</p>
+      </div>
+      <div class="card">
+        <p class="role">prompts</p>
+        <span class="fname">prompts.py</span>
+        <p>Eight system prompts as constants. The pipeline stages <em>are</em> their prompts — versioned like code.</p>
+      </div>
+      <div class="card">
+        <p class="role">credential</p>
+        <span class="fname">okf.py</span>
+        <p>The only frontmatter writer. The bundle on disk <em>is</em> the credential; <code>okf.yaml</code> inventories every doc.</p>
+      </div>
+      <div class="card">
+        <p class="role">ledger</p>
+        <span class="fname">events.py</span>
+        <p>Append-only <code>events.jsonl</code> (schema 1). Written from day one as the pathway-graph seed.</p>
+      </div>
+      <div class="card">
+        <p class="role">sources</p>
+        <span class="fname">verify.py</span>
+        <p>Checks harvest locators (arXiv · doi.org · HEAD). Flags-and-continues — never blocks a compile.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="flow" aria-hidden="true">
+    <svg viewBox="0 0 560 44" fill="none" stroke="currentColor" stroke-width="1.4">
+      <path d="M280 2 L 280 38" />
+      <path d="M272 30 L 280 40 L 288 30" stroke="var(--garnet)" />
+    </svg>
+    <span class="flow-label">read &amp; write — the single source of truth</span>
+  </div>
+
+  <!-- BAND 4 — DISK -->
+  <section class="band">
+    <div class="band-head">
+      <span class="band-num">04</span>
+      <h2 class="band-title">On disk — the journey</h2>
+      <span class="band-note">No database, no cache. journey.py reads the bundles, so it can never disagree with them.</span>
+    </div>
+    <div class="disk">
+      <p class="disk-note">A journey is a home directory of courses. Attach one from anywhere — a local path symlinks, a git URL clones — and its verified knowledge counts the same.</p>
+<pre class="tree"><b>$SYLABIS_HOME/</b>            <span class="c"># default ~/sylabis · override with --home</span>
+├── <b>courses/</b>
+│   └── <b>&lt;course&gt;/</b>
+│       ├── course.yaml           <span class="c"># manifest: milestones, sidequests</span>
+│       ├── okf.yaml              <span class="c"># document inventory (the credential)</span>
+│       ├── &lt;milestone&gt;/
+│       │   ├── LESSON.md          <span class="c"># OKF frontmatter + lesson</span>
+│       │   ├── checkpoint.yaml    <span class="c"># rubric, grader mode, misconception</span>
+│       │   ├── <span class="k">artifact.md · reflection.md</span>   <span class="c"># the learner's own work</span>
+│       │   └── grade.yaml         <span class="c"># tiered result</span>
+│       ├── portfolio/             <span class="c"># competency-evidence claims</span>
+│       ├── events.jsonl           <span class="c"># append-only ledger</span>
+│       └── .github/workflows/grade.yml  <span class="c"># push artifact → CI grades → PR comment</span>
+└── <b>knowledge.md</b>              <span class="c"># cross-course map: concept → evidence</span></pre>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- THE LOOP -->
+  <section class="band">
+    <div class="band-head">
+      <span class="band-num">↻</span>
+      <h2 class="band-title">The loop</h2>
+    </div>
+    <div class="loop">
+      <span class="v">compile</span><span class="sep">·</span>
+      <span class="v">teach</span><span class="sep">·</span>
+      <span class="v">grade</span><span class="sep">·</span>
+      <span class="v">adapt</span><span class="sep">·</span>
+      <span class="v"><i>connect</i></span>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- INVARIANTS -->
+  <section class="band">
+    <div class="band-head">
+      <span class="band-num">✳</span>
+      <h2 class="band-title">Invariants — deliberate, not shortcuts</h2>
+    </div>
+    <ul class="rules">
+      <li><b>The work is the learner's.</b> The guide never writes an artifact or reflection; submit only verbatim text.</li>
+      <li><b>Grades come only from the grader.</b> The agent must never predict or promise one.</li>
+      <li><b>Tiers short-circuit.</b> Overclaiming blocks before quality judgment; explain-back can cap a passing score.</li>
+      <li><b>actuate() is idempotent.</b> Re-grading never stacks remedials or double-emits events.</li>
+      <li><b>okf.py is the only frontmatter writer.</b> All document production routes through it.</li>
+      <li><b>Routes refuse traversal.</b> <code>../</code>, absolute, and nonexistent paths are turned away.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <span>sylabis · sy</span>
+    <span>compiles courses · grades artifacts · adapts the path · connects verified knowledge</span>
+  </footer>
+
+</div>
