@@ -120,6 +120,51 @@ lives in `tests/` (`python -m tests.run_all`).
 
 ## Architecture
 
+Three doors, one core, and no database — a course is a directory you can read.
+A [rendered, themed version of this diagram](docs/architecture.html) lives in `docs/`.
+
+```mermaid
+flowchart TB
+    subgraph doors["① Surfaces — three doors (same powers)"]
+        direction LR
+        term["Terminal<br/>agent.py · console.py"]
+        web["Browser · Reading Room<br/>web.py"]
+        mcp["MCP client<br/>mcp_server.py"]
+    end
+
+    reg{{"tools.py<br/>one journey-scoped tool registry"}}
+    term --> reg
+    web --> reg
+    mcp --> reg
+
+    subgraph engine["② Core engine"]
+        direction LR
+        compiler["compiler.py<br/>intake → harvest → sequence → emit → self-test"]
+        grader["grader.py<br/>T1 structural → T2 claim audit → T3 rubric → explain-back"]
+        patheng["path_engine.py<br/>decide() → actuate()"]
+        journeymod["journey.py<br/>knowledge · prior_knowledge · attach · emit_map"]
+    end
+    reg ==> engine
+
+    subgraph foundation["③ Shared foundation"]
+        direction LR
+        llm["llm.py<br/>the only model calls"]
+        prompts["prompts.py<br/>8 system prompts"]
+        okf["okf.py<br/>the only frontmatter writer"]
+        events["events.py<br/>append-only events.jsonl"]
+        verify["verify.py<br/>source verification"]
+    end
+    engine ==> foundation
+
+    disk[("$SYLABIS_HOME — on disk<br/>courses/ · portfolio · knowledge.md · events.jsonl<br/>no database: journey.py reads the bundles")]
+    foundation ==> disk
+
+    classDef accent stroke:#8A2B34,stroke-width:2px;
+    class reg,disk accent;
+```
+
+The loop, end to end: **compile → teach → grade → adapt → connect**.
+
 ```
 sylabis/
 ├── agent.py        the harness: one streaming tool-use loop; sylabis IS
