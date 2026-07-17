@@ -33,7 +33,7 @@ from .path_engine import decide, actuate
 
 def main():
     p = argparse.ArgumentParser(
-        prog="sylabis",
+        prog=os.path.basename(sys.argv[0] or "") or "sy",
         description="The learning agent. Run with no arguments to talk.")
     sub = p.add_subparsers(dest="cmd")
 
