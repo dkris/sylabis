@@ -12,6 +12,7 @@ import yaml
 
 from . import events
 from . import journey
+from . import trust
 from .llm import LLM
 
 
@@ -101,6 +102,8 @@ class JourneyTools:
             compile_course(topic, profile, out_dir, self._llm())
         except SystemExit as e:  # declined topic or self-test failure
             raise ToolError(str(e))
+        # You asked for this code to exist — your own compile is trusted.
+        trust.grant(self.home, out_dir, "compiled")
         journey.emit_map(self.home)
         return (f"Course compiled into {out_dir.name!r}.\n\n"
                 + (out_dir / "index.md").read_text())
@@ -143,7 +146,8 @@ class JourneyTools:
         (m_dir / "reflection.md").write_text(args["reflection"])
 
         llm = self._llm()
-        result = grade(cdir, mid, llm, hours_actual=args.get("hours_actual"))
+        result = grade(cdir, mid, llm, hours_actual=args.get("hours_actual"),
+                       run_scripts=trust.is_trusted(self.home, cdir))
         manifest = yaml.safe_load((cdir / "course.yaml").read_text())
         milestone = next((m for m in manifest["milestones"]
                           if m["id"] == mid), None)

@@ -10,6 +10,7 @@ The learner surface, in the order you'll use it:
   sylabis submit               grade the work sitting in your journey
   sylabis journey              progress + the knowledge map
   sylabis attach SOURCE        connect a course from another repo or path
+  sylabis trust [COURSE]       allow an attached course's rubric scripts
   sylabis serve [COURSE_DIR]   MCP server (journey-wide without a dir)
 
 No paths, no milestone ids, no flags required: the journey lives in
@@ -25,6 +26,7 @@ from pathlib import Path
 import yaml
 
 from . import journey
+from . import trust
 from .compiler import compile_course
 from .grader import grade as run_grade
 from .llm import LLM
@@ -74,7 +76,15 @@ def main():
     at = sub.add_parser("attach", help="connect a course that lives in "
                                        "another repo or directory")
     at.add_argument("source", help="git URL (clones) or local path (links)")
+    at.add_argument("--trust", action="store_true",
+                    help="also allow its executable rubric scripts to run")
     home_flag(at)
+
+    tr = sub.add_parser("trust", help="allow a course's executable rubric "
+                                      "scripts to run (list without args)")
+    tr.add_argument("course", nargs="?", default=None,
+                    help="course name from the journey")
+    home_flag(tr)
 
     s = sub.add_parser("serve", help="MCP stdio server (journey-wide "
                                      "without a course dir)")
@@ -117,6 +127,7 @@ def main():
             print(f"Building on {len(prior)} known concepts.")
         out = journey.new_course_dir(home, args.topic)
         compile_course(args.topic, profile, out, LLM(mock=args.mock))
+        trust.grant(home, out, "compiled")  # your own compile is trusted
         journey.emit_map(home)
         step = journey.course_next(out)
         print(f"\nStart here: sylabis next  →  {step['milestone_id']} — "
@@ -164,7 +175,17 @@ def main():
         dest = journey.attach(home, args.source)
         journey.emit_map(home)
         print(f"Attached {dest.name!r} to the journey.")
+        if args.trust:
+            trust.grant(home, dest, f"attach:{args.source}")
+            print("Trusted: its rubric scripts may run during grading.")
+        else:
+            print("Untrusted: executable grading stays off until you run "
+                  f"`sylabis trust {dest.name}` (its rubric scripts are "
+                  "real code).")
         _print_step(journey.course_next(dest))
+
+    elif args.cmd == "trust":
+        _trust(args)
 
     elif args.cmd == "serve":
         from .mcp_server import MCPServer  # lazy: stdio server pulls no deps
@@ -225,9 +246,32 @@ def _submit(args) -> None:
     step = ready[0]
     cdir = journey.course_dir(home, step["course"])
     result = _grade_and_adapt(cdir, step["milestone_id"], LLM(mock=args.mock),
-                              hours_actual=args.hours)
+                              hours_actual=args.hours,
+                              run_scripts=trust.is_trusted(home, cdir))
     journey.emit_map(home)
     sys.exit(0 if result["passed"] else 1)
+
+
+def _trust(args) -> None:
+    """`sylabis trust COURSE` grants; without a course, list where every
+    course stands so the decision is never a mystery."""
+    home = journey.home(args.home)
+    if args.course:
+        cdir = journey.course_dir(home, args.course)
+        if not (cdir / "course.yaml").exists():
+            sys.exit(f"No course {args.course!r} in the journey.")
+        trust.grant(home, cdir, "granted")
+        print(f"Trusted {args.course!r} — its rubric scripts may now run "
+              "during grading.")
+        return
+    dirs = journey.course_dirs(home)
+    if not dirs:
+        print("No courses in the journey yet.")
+        return
+    for cdir in dirs:
+        state = "trusted" if trust.is_trusted(home, cdir) else \
+            f"untrusted — `sylabis trust {cdir.name}` to allow scripts"
+        print(f"{cdir.name}: {state}")
 
 
 def _grade_and_adapt(course_dir: Path, milestone_id: str, llm: LLM,

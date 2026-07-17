@@ -30,6 +30,7 @@ from sylabis.grader import grade  # noqa: E402
 from sylabis.llm import LLM, parse_json  # noqa: E402
 from sylabis.mcp_server import MCPServer  # noqa: E402
 from sylabis.path_engine import decide, actuate  # noqa: E402
+from sylabis import trust  # noqa: E402
 from sylabis.tools import JourneyTools, ToolError  # noqa: E402
 from sylabis.verify import resolve_locator, verify_sources  # noqa: E402
 
@@ -476,6 +477,41 @@ def test_attach_connects_other_repos(tmp):
         raise AssertionError("attaching a non-course must fail loudly")
 
 
+def test_trust_gates_rubric_scripts(tmp):
+    """The execution boundary: an attached course's rubric scripts do not
+    run until the learner consents; your own compile is trusted; the
+    explicit `grade DIR MID` plumbing path is not gated."""
+    home = _journey_home(tmp)
+    exec_course = _exec_course(
+        tmp, 'import json\nprint(json.dumps({"score": 0.9, "metrics": {}}))\n')
+    journey.attach(home, str(exec_course))
+    tools = JourneyTools(home, mock=True)
+
+    with redirect_stdout(io.StringIO()):
+        out = tools.call("submit_work", {
+            "course": "exec", "milestone_id": "00-data-audit",
+            "artifact": "n/a", "reflection": "reflection"})
+    assert "sylabis trust" in out, "refusal must say how to consent"
+    g = yaml.safe_load(
+        (exec_course / "00-data-audit" / "grade.yaml").read_text())
+    assert not g["passed"] and \
+        "scripts_blocked_untrusted" in g["failure_flags"]
+
+    trust.grant(home, home / "courses" / "exec", "granted")
+    with redirect_stdout(io.StringIO()):
+        out = tools.call("submit_work", {
+            "course": "exec", "milestone_id": "00-data-audit",
+            "artifact": "n/a", "reflection": "reflection"})
+    assert "PASSED" in out, "consent must actually unlock the scripts"
+
+    # a course compiled into your own journey is trusted automatically
+    with redirect_stdout(io.StringIO()):
+        tools.call("start_course", {"topic": "Survey synthesis"})
+    assert trust.is_trusted(home, home / "courses" / "survey-synthesis")
+    # ...and the explicit plumbing path stays ungated (CI, own repo):
+    # grade_mock() elsewhere in this suite runs scripts with no registry.
+
+
 # -------------------------------------------------------- journey tool surface
 
 def test_tools_walk_the_loop(tmp):
@@ -598,6 +634,64 @@ def test_agent_interrupt_rolls_back_turn(tmp):
     reply = agent.turn(messages)
     assert reply == "" and messages == [{"role": "user", "content": "hi"}], \
         "interrupted turn must be rolled back whole"
+
+
+def test_bus_event_order(tmp):
+    """The loop renders nothing itself — it narrates through the bus, and
+    any subscriber sees the same ordered story."""
+    replies = [
+        _Resp([_Block(type="tool_use", name="journey", input={}, id="t1")],
+              "tool_use"),
+        _Resp([_Block(type="text", text="Let's begin.")], "end_turn"),
+    ]
+    agent = _stub_agent(tmp, replies)
+    seen = []
+    agent.bus.subscribe(lambda e: seen.append(type(e).__name__))
+    agent.turn([{"role": "user", "content": "hi"}])
+    assert seen[0] == "TurnStarted" and seen[-1] == "TurnEnded"
+    assert seen.index("ToolCallStarted") < seen.index("ToolResult")
+    assert "TextDelta" in seen, "stub streams; deltas must reach the bus"
+    assert seen.count("ModelCallStarted") == 2, "one per tool round"
+
+
+def test_session_persists_and_resumes(tmp):
+    """The conversation survives the process: converse() persists each
+    completed turn, a new Agent resumes it, an interrupted turn leaves no
+    trace anywhere, and /clear wipes memory and disk together."""
+    from sylabis.agent import Agent
+    from sylabis.console import Console
+
+    home = _journey_home(tmp)
+
+    def make_agent(replies):
+        return Agent(home, llm=_StubModel(replies),
+                     console=Console(enabled=False))
+
+    a1 = make_agent([
+        _Resp([_Block(type="tool_use", name="journey", input={}, id="t1")],
+              "tool_use"),
+        _Resp([_Block(type="text", text="Welcome.")], "end_turn"),
+    ])
+    assert a1.messages == [], "fresh journey, fresh conversation"
+    assert a1.converse("hi") == "Welcome."
+    assert a1.messages[0]["content"].startswith("(new session"), \
+        "first turn carries the orient instruction"
+    assert len(a1.messages) == 4
+
+    a2 = make_agent([])
+    assert a2.messages == a1.messages, "a new process resumes the transcript"
+
+    class _Boom:
+        def chat(self, *a, **kw):
+            raise KeyboardInterrupt
+    a2.llm = _Boom()
+    assert a2.converse("again") == ""
+    assert len(a2.messages) == 4, "interrupted turn keeps nothing in memory"
+    assert len(make_agent([]).messages) == 4, "…and nothing on disk"
+
+    a2._command("/clear")
+    assert a2.messages == [] and make_agent([]).messages == [], \
+        "/clear wipes memory and disk together"
 
 
 def test_console_trace_previews():

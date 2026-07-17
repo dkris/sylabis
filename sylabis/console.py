@@ -146,6 +146,42 @@ class Console:
             sp.stop()
 
 
+class ConsoleRenderer:
+    """The Console as a bus subscriber: translates agent turn events into
+    the trace. This is the only place event types meet ANSI painting — a
+    different front end subscribes its own renderer and console.py never
+    hears about it."""
+
+    def __init__(self, console: Console):
+        self.console = console
+
+    def __call__(self, event) -> None:
+        from . import bus  # local: console must stay importable alone
+        ui = self.console
+        if isinstance(event, bus.TurnStarted):
+            ui.turn_start()
+        elif isinstance(event, bus.ModelCallStarted):
+            ui.spinner("thinking")
+        elif isinstance(event, bus.TextDelta):
+            ui.text_delta(event.text)
+        elif isinstance(event, bus.AssistantText):
+            ui.text_block(event.text)
+        elif isinstance(event, bus.ToolCallStarted):
+            ui.tool_call(event.name, event.args)
+            ui.spinner(event.name)
+        elif isinstance(event, bus.ToolResult):
+            ui.stop_spinner()
+            ui.tool_result(event.text, error=event.error)
+        elif isinstance(event, bus.TurnEnded):
+            ui.stop_spinner()
+        elif isinstance(event, bus.TurnInterrupted):
+            ui.stop_spinner()
+            ui.notice("interrupted — this turn was rolled back")
+        elif isinstance(event, bus.TurnStopped):
+            ui.stop_spinner()
+            ui.error(event.reason)
+
+
 class _Spinner:
     def __init__(self, console: Console, label: str):
         self.console = console
