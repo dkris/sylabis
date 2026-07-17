@@ -92,6 +92,9 @@ def actuate(course_dir: Path, decisions: list[dict], llm=None) -> list[str]:
 
     if index_dirty:
         okf.emit_course_index(course_dir)
+        # actuate runs after grade() sealed okf.yaml — rewriting index.md
+        # without re-inventorying would read as tampering.
+        okf.emit_bundle_manifest(course_dir)
     return done
 
 

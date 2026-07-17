@@ -911,9 +911,43 @@ def case_web_url_forms():
         "https://github.com/me/course"
     assert gitio.web_url("https://gitlab.com/me/course") == \
         "https://gitlab.com/me/course"
+    assert gitio.web_url("ssh://git@github.com/me/course.git") == \
+        "https://github.com/me/course"
+    assert gitio.web_url("https://me:tok3n@github.com/me/course.git") == \
+        "https://github.com/me/course", "credentials must never reach links"
     assert gitio.web_url("file:///tmp/bare") is None
     assert gitio.web_url(None) is None
     assert gitio.web_url("gibberish") is None
+
+
+def case_commit_never_sweeps_env(tmp):
+    """Even in a repo missing our .gitignore (an attached clone), sylabis
+    must never commit a learner's .env — pathspec-excluded, not just
+    ignore-file-excluded."""
+    course = compile_mock(tmp)
+    (course / ".gitignore").unlink()
+    (course / ".env").write_text("ANTHROPIC_API_KEY=sk-secret\n")
+    (course / "00-data-audit" / ".env").write_text("nested=1\n")
+    assert gitio.commit_all(course, "sweep test") is True
+    tracked = git(course, "ls-files")
+    assert ".env" not in tracked.split("\n")
+    assert "00-data-audit/.env" not in tracked.split("\n")
+
+
+def case_manifest_fresh_after_submit_unlock(tmp):
+    """actuate() rewrites index.md on a sidequest unlock AFTER grade()
+    sealed okf.yaml — the manifest must be re-emitted or a clean submit
+    reads as tampering."""
+    home = _journey_home(tmp)
+    tools = JourneyTools(home, mock=True)
+    with redirect_stdout(io.StringIO()):
+        tools.call("start_course", {"topic": "Survey synthesis"})
+        out = tools.call("submit_work", {
+            "course": "survey-synthesis", "milestone_id": "00-data-audit",
+            "artifact": STRONG_ARTIFACT, "reflection": STRONG_REFLECTION})
+    assert "unlocked sidequest" in out, "precondition: the unlock fired"
+    course = home / "courses" / "survey-synthesis"
+    assert okf.conformance_problems(course) == []
 
 
 def case_submit_autocommits_once(tmp):

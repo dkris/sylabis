@@ -250,6 +250,9 @@ def _init(args) -> None:
     path = config.save_key(key, journey.home(args.home)
                            if args.home else None)
     print(f"Key saved to {path} (readable only by you).")
+    if args.home and Path(args.home).resolve() != config.home().resolve():
+        print(f"Note: commands only read this file when SYLABIS_HOME "
+              f"points there:\n  export SYLABIS_HOME={args.home}")
     if not args.no_validate:
         os.environ["ANTHROPIC_API_KEY"] = key
         from .llm import validate_key
@@ -406,8 +409,14 @@ def _submit(args) -> None:
     journey.emit_map(home)
     # Commit here — after actuate(), so remedials land in the same commit —
     # and ONLY here, never in the `grade` plumbing path: that's what CI
-    # runs, and grade.yml commits its own state.
-    if gitio.commit_all(cdir, _grade_commit_message(result)):
+    # runs, and grade.yml commits its own state. A git problem must never
+    # eat a grade that was already recorded.
+    try:
+        committed = gitio.commit_all(cdir, _grade_commit_message(result))
+    except gitio.GitError as e:
+        committed = False
+        print(f"\n(git: {e} — the grade is recorded either way)")
+    if committed:
         print("\nCommitted to course history."
               + ("" if not gitio.remote_url(cdir)
                  else " Push it with: sylabis sync"))

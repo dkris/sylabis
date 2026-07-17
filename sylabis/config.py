@@ -44,8 +44,11 @@ def save_key(key: str, home_dir: Path | str | None = None) -> Path:
         lines = [l for l in env_path.read_text().splitlines()
                  if not l.startswith("ANTHROPIC_API_KEY=")]
     lines.append(f"ANTHROPIC_API_KEY={key}")
-    env_path.write_text("\n".join(lines) + "\n")
-    os.chmod(env_path, 0o600)
+    # 0600 from birth — never a window where the key is world-readable.
+    fd = os.open(env_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.chmod(env_path, 0o600)  # pre-existing files keep no wider mode
     return env_path
 
 

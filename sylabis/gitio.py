@@ -80,17 +80,21 @@ def _identity_args(cdir: Path) -> list[str]:
 
 def commit_all(cdir: Path, message: str) -> bool:
     """Commit everything, or nothing: skip-when-clean is the idempotency
-    contract — re-running never stacks empty commits."""
+    contract — re-running never stacks empty commits. `.env` files are
+    excluded by pathspec, not just .gitignore, so a learner's key can
+    never be committed by sylabis even in a repo missing our ignore file
+    (e.g. an attached clone). Returns True only when a commit was made."""
     cdir = Path(cdir)
     if not has_git() or not is_repo(cdir):
         return False
     if not _run(cdir, "status", "--porcelain").stdout.strip():
         return False
-    _run(cdir, "add", "-A")
-    subprocess.run(["git", "-C", str(cdir), *_identity_args(cdir),
-                    "commit", "-q", "-m", message],
-                   capture_output=True, text=True, check=False)
-    return True
+    _run(cdir, "add", "-A", "--", ".",
+         ":(exclude).env", ":(exclude)**/.env")
+    proc = subprocess.run(["git", "-C", str(cdir), *_identity_args(cdir),
+                           "commit", "-q", "-m", message],
+                          capture_output=True, text=True, check=False)
+    return proc.returncode == 0
 
 
 def remote_url(cdir: Path) -> str | None:
@@ -132,26 +136,32 @@ def pull_ff(cdir: Path) -> bool:
     proc = _run(cdir, "pull", "--ff-only", "-q", "origin",
                 current_branch(cdir), check=False)
     if proc.returncode != 0:
-        raise GitError(
-            f"{Path(cdir).name} has diverged from its remote.\n"
-            f"Resolve it manually: git -C {cdir} pull --rebase")
+        err = (proc.stderr or proc.stdout).strip()
+        if "fast-forward" in err or "divergent" in err.lower():
+            raise GitError(
+                f"{Path(cdir).name} has diverged from its remote.\n"
+                f"Resolve it manually: git -C {cdir} pull --rebase")
+        raise GitError(f"Could not pull {Path(cdir).name}: {err}")
     return head_sha(cdir) != before
 
 
 _WEB_URL = re.compile(
-    r"^(?:https://(?P<host>[^/]+)/|git@(?P<sshhost>[^:]+):)"
+    r"^(?:https://(?P<host>[^/]+)/|ssh://(?:[^@/]+@)?(?P<sshurlhost>[^/:]+)"
+    r"(?::\d+)?/|git@(?P<sshhost>[^:]+):)"
     r"(?P<path>.+?)(?:\.git)?/?$")
 
 
 def web_url(remote: str | None) -> str | None:
     """Browser URL for a remote — pure string transform, total function:
-    anything unrecognized (file://, local paths) returns None."""
+    anything unrecognized (file://, local paths) returns None. Userinfo
+    (tokens embedded in https remotes) never reaches a share link."""
     if not remote or remote.startswith("file://"):
         return None
     m = _WEB_URL.match(remote)
     if not m:
         return None
-    host = m.group("host") or m.group("sshhost")
+    host = m.group("host") or m.group("sshurlhost") or m.group("sshhost")
+    host = host.rsplit("@", 1)[-1]  # strip user:token@ credentials
     return f"https://{host}/{m.group('path')}"
 
 

@@ -168,11 +168,16 @@ class JourneyTools:
         for a in actions:
             lines.append(f"  {a}")
         # After actuate(), so remedials land in the same commit. Never in
-        # the grade plumbing itself — CI commits its own grade state.
-        if gitio.commit_all(cdir, f"grade: {mid} attempt {result['attempt']}"
-                                  f" — {'passed' if result['passed'] else 'not yet'}"
-                                  f" {result['grade']:.0%}"):
-            lines.append("Committed to course history.")
+        # the grade plumbing itself — CI commits its own grade state, and
+        # a git problem must never eat a grade that was already recorded.
+        try:
+            if gitio.commit_all(cdir,
+                                f"grade: {mid} attempt {result['attempt']}"
+                                f" — {'passed' if result['passed'] else 'not yet'}"
+                                f" {result['grade']:.0%}"):
+                lines.append("Committed to course history.")
+        except gitio.GitError as e:
+            lines.append(f"(git: {e} — the grade is recorded either way)")
         return "\n".join(lines)
 
     def _t_get_report(self, args: dict) -> str:
