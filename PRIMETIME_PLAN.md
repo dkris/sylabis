@@ -5,8 +5,8 @@
 This is the execution plan to take sylabis from a working local prototype to a production product, in two phases plus a Y Combinator overlay track:
 
 - **Phase 1 — Self-hosted (≈12 weeks):** hardened TUI + local web app, real packaging/distribution, a serverless public learning-path registry (publish → share → clone) with a give-to-get reciprocity mechanic, and a deliberate multi-agent architecture decision.
-- **Phase 2 — Hosted MVP (≈16 weeks solo, ≈12 with one hire):** multi-user, authenticated, BYOK + vendor-key, metered billing, production security/reliability/trust/ethics program, deployment on managed infrastructure.
-- **YC 2026 track (overlay):** the Fall 2026 application deadline is **July 27, 2026 — 10 days from today**. The overlay reorders a small P0 subset of Phase 1 into this week, launches publicly next week, and submits the application, with Winter 2027 as the planned second shot.
+- **Phase 2 — Hosted MVP (≈16 weeks with one contract hire, ≈20 solo):** multi-user, authenticated, BYOK + vendor-key, metered billing, production security/reliability/trust/ethics program, deployment on managed infrastructure.
+- **YC 2026 track (overlay):** the Fall 2026 application deadline is **July 27, 2026 — 10 days from today**. The overlay reorders a small P0 subset of Phase 1 into this week, launches publicly next week, and submits the application, with Winter 2027 as the planned second shot. (The brief places the YC application inside Phase 2; executed literally that submits in early 2027 and misses every 2026 cohort — pulling it forward as an overlay is the only way to honor "YC 2026 cohort," and that reordering is flagged here deliberately.)
 
 Everything below is written to be executed directly: numbered workstreams, named decisions (not option lists), file-level references into the current codebase, acceptance criteria, and week-level sequencing.
 
@@ -45,7 +45,7 @@ A parallel audit of the codebase (five independent deep-reads: pipeline, surface
 3. The emitted `grade.yml` GitHub workflow runs rubric scripts **with the API key in env and `contents:write`** (`compiler.py:262–351`).
 4. `verify.py` follows redirects on model-supplied URLs with no private-IP filtering — an SSRF path the moment the compiler runs on a server.
 
-**Privacy (sharing is currently radioactive):** `course.yaml` embeds the learner block (hours, hardware, full prior-knowledge list, topic prompt — `compiler.py:157–165`); `events.jsonl` records the raw learner profile despite `events.py`'s own `learner_profile_hash` comment (`compiler.py:20–21`); artifacts, reflections, grades, and portfolio claims live inside the bundle with no publish-time scrubber; local attach is a **symlink**, so grading someone's shared checkout mutates their original (`journey.py:87–88`); nothing records provenance (model/prompt versions, commit SHA), and `okf.yaml` has no integrity hashes, so a hand-edited `passed: true` in an attached bundle flows straight into `prior_knowledge()`.
+**Privacy (sharing is currently radioactive):** `course.yaml` embeds the learner block (hours, hardware, full prior-knowledge list, topic prompt — `compiler.py:157–164`); `events.jsonl` records the raw learner profile despite `events.py`'s own `learner_profile_hash` comment (`compiler.py:20–21`); artifacts, reflections, grades, and portfolio claims live inside the bundle with no publish-time scrubber; local attach is a **symlink**, so grading someone's shared checkout mutates their original (`journey.py:87–88`); nothing records provenance (model/prompt versions, commit SHA), and `okf.yaml` has no integrity hashes, so a hand-edited `passed: true` in an attached bundle flows straight into `prior_knowledge()`.
 
 **Calibration (grade trust):** a checkpoint with no rubric silently passes at 0.85 (`grader.py:68`); the claim-audit fallback floor lets ~38%-claims-passing artifacts clear 0.75 (`grader.py:82`); the most safety-critical LLM judgments (claim audit, explain-back) have no live-model eval harness — fixtures test the plumbing, never the prompts.
 
@@ -86,7 +86,7 @@ Every decision the plan commits to, in one place. Rationale lives in the phase s
 
 # Phase 1 — Self-Hosted Product: TUI + Local Web, Distribution, Public Path Registry, and the Agent Architecture Decision
 
-**Duration: ~12 weeks solo (with ~2 weeks of float). Ordering principle: security debt that becomes catastrophic once strangers' bundles enter the system (WS1, WS3a) is paid *before* the sharing network ships. Nothing here requires a server you operate — Phase 1 stays "no infrastructure you babysit."**
+**Duration: ~12 weeks solo (with ~1 week of float). Ordering principle: security debt that becomes catastrophic once strangers' bundles enter the system (WS1, WS3a) is paid *before* the sharing network ships. Nothing here requires a server you operate — Phase 1 stays "no infrastructure you babysit."**
 
 The three-surfaces-one-registry design (`sylabis/tools.py` driving `agent.py`, `web.py`, `mcp_server.py`) and the on-disk bundle-is-the-credential model are the assets; every workstream below preserves them. The `--mock` fixture contract (`fixtures/<stage>.json` through `llm.py`) is the testability spine — every deliverable that touches the pipeline ships with fixtures or it doesn't ship.
 
@@ -148,9 +148,9 @@ Deliverables:
 
 1. **Repo CI, week 1, non-negotiable**: `.github/workflows/ci.yml` running `pip install -e . && python -m tests.run_all` on push/PR across Python 3.10-3.13, plus `ruff check` and **gitleaks** (secret scanning is a registry prerequisite — WS3). The repo currently has *no* `.github/` directory at all; the offline stdlib-only suite makes this a 20-line workflow.
 2. **PyPI-grade `pyproject.toml`**: readme, license, authors, classifiers, `project.urls`, single-sourced `__version__` (surfaced as `sy --version`, and replacing the hardcoded `'0.1.0'` in `mcp_server.py:115` and `compiler.py:159`), `[tui]` extra, lower-bounded deps. Publish to PyPI via a tag-triggered release workflow (trusted publishing, no long-lived token). `CHANGELOG.md` from day one.
-3. **Install story, in README order**: `uv tool install sylabis` / `uvx sylabis` headline, `pipx` fallback, `install.sh` retained but pinned to the latest release tag instead of `REF=main` (`install.sh:23`) — a curl|sh that installs whatever `main` currently contains is unauditable. Homebrew tap and Docker image are explicitly deferred until post-traction.
-4. **MCP entry point**: `sylabis-mcp` console script wrapping `python -m sylabis.cli serve`, so Claude Desktop/Code config is the 2026-conventional `{"command": "uvx", "args": ["--from", "sylabis", "sylabis-mcp"]}`. Fix `cli.py:170-172` to pass `--mock` through to `MCPServer` so the MCP surface is testable offline from the CLI. While in there: negotiate protocol version honestly instead of silently answering with LATEST (`mcp_server.py:110-111`).
-5. **Update etiquette**: daily-cached PyPI version check printing a one-line notice, disabled by `SYLABIS_NO_UPDATE_CHECK` and honoring `DO_NOT_TRACK`. No silent self-update. **No telemetry in Phase 1 at all** — for a product whose thesis is learner-owned credentials, ship zero phone-home and say so loudly in the README.
+3. **Install story, in README order**: `uv tool install sylabis` / `uvx sylabis` headline, `pipx` fallback, `install.sh` retained but pinned to the latest release tag instead of `REF=main` (`install.sh:21`) — a curl|sh that installs whatever `main` currently contains is unauditable. Homebrew tap and Docker image are explicitly deferred until post-traction.
+4. **MCP entry point**: `sylabis-mcp` console script wrapping `python -m sylabis.cli serve`, so Claude Desktop/Code config is the 2026-conventional `{"command": "uvx", "args": ["--from", "sylabis", "sylabis-mcp"]}`. Fix `cli.py:170-172` to pass `--mock` through to `MCPServer` so the MCP surface is testable offline from the CLI. While in there: version negotiation already answers per-spec for supported versions (`mcp_server.py:110-111`); narrow the fallback so unknown/future protocol versions are rejected or explicitly flagged instead of silently answered with LATEST.
+5. **Update etiquette**: daily-cached PyPI version check printing a one-line notice, disabled by `SYLABIS_NO_UPDATE_CHECK` and honoring `DO_NOT_TRACK`. No silent self-update. **No default telemetry, ever** — for a product whose thesis is learner-owned credentials, ship zero phone-home by default and say so loudly in the README. The YC track's week-2 instrumentation (D19) is PyPI download stats plus an opt-in, first-run-consented usage ping — the only telemetry Phase 1 may ship.
 6. **License decision — decide now, before external contributions make it hard**: **AGPL-3.0** for the core (Plausible model). A hosted Phase-2 sylabis is clearly on the roadmap; AGPL keeps the OSI open-source label (which the learner-owned-credential thesis needs — FSL/sustainable-use would forfeit it) while deterring a hosted competitor from free-riding. Registry *content* (published paths) is separately licensed CC-BY by default (WS3).
 
 Acceptance criteria: `uvx sylabis --version` works on a clean machine with no Python preinstalled; CI is green and required for merge; a git tag produces a PyPI release with matching changelog entry; gitleaks passes on full history (scrub and rotate anything it finds *before* the repo gets attention).
@@ -178,12 +178,12 @@ Acceptance criteria: adversarial test bundle with `../`-escaping and absolute ru
 
 ### 3b. `sy publish` — the privacy scrubber — 1 week
 
-A used bundle is radioactive: `course.yaml` embeds the learner block (`weekly_hours`, `hardware`, full `prior_knowledge`, `topic_prompt` — `compiler.py:157-165`), `events.jsonl` carries the raw learner profile (`compiler.py:20-21`, violating `events.py`'s own `learner_profile_hash` comment), and `artifact.md`/`reflection.md`/`grade.yaml`/`portfolio/` are the learner's verbatim work. Publishing must be a *transform*, never a `git push` of the journey. CLAUDE.md's "never commit a learner's journey" becomes tooling.
+A used bundle is radioactive: `course.yaml` embeds the learner block (`weekly_hours`, `hardware`, full `prior_knowledge`, `topic_prompt` — `compiler.py:157-164`), `events.jsonl` carries the raw learner profile (`compiler.py:20-21`, violating `events.py`'s own `learner_profile_hash` comment), and `artifact.md`/`reflection.md`/`grade.yaml`/`portfolio/` are the learner's verbatim work. Publishing must be a *transform*, never a `git push` of the journey. CLAUDE.md's "never commit a learner's journey" becomes tooling.
 
 Deliverables:
 
 1. **`sy publish <course> [--to <dir|git-url>]`** producing a clean template bundle: **allowlist, not denylist** — only `course.yaml` (learner block *removed*, replaced by declared `assumed_knowledge` tags), `okf.yaml` (regenerated for the template), lesson/checkpoint/knowledge docs, sidequests, `grade.yml` workflow. `events.jsonl`, `grade.yaml`, `artifact.md`, `reflection.md`, `portfolio/`, `.compile/`, anything dotfile: structurally excluded. All doc re-emission routes through `okf.py` per the invariant.
-2. **Publish manifest** in the template's `course.yaml`: author handle, license (mandatory field, default **CC-BY-4.0**; the HF-model-card lesson is that a machine-readable license field must be required, not optional), sylabis version, per-stage model/prompt versions (from WS1a), source-verification summary from `verify.py`. Legal posture stays clean because bundles ship **locators, never harvested source text** — linking is not copying; state this in the registry docs.
+2. **Publish manifest** in the template's `course.yaml`: author handle, license (mandatory field, default **CC-BY-4.0**; the HF-model-card lesson is that a machine-readable license field must be required, not optional), sylabis version, per-stage model/prompt versions (from WS1a), source-verification summary from `verify.py`. Legal posture stays clean because bundles ship **locators, never harvested source text** — linking is not copying; state this in the registry docs. (Note on the brief's "public domain": the plan reads it as *publicly hosted on the open web*, not a CC0 dedication — CC-BY-4.0 is the default because attribution fuels the status-based reciprocity mechanic; authors who want a literal public-domain dedication can set `license: CC0-1.0` in the mandatory field.)
 3. **Pre-publish gate**: run `compiler.self_test()` on the template, then a gitleaks scan plus a sylabis-specific PII check (refuses if any excluded-class file or a learner block survives). Publish refuses on any failure. Also fix the leak at the source: `compile.requested` events switch to `learner_profile_hash` now.
 4. **Integrity**: `okf.yaml` gains per-file SHA-256 hashes (`okf.py` is the sole writer, so this is one function). Claims become tamper-*evident*, not tamper-proof — honest framing for Phase 1; signing comes with Phase 2 identity.
 
@@ -200,7 +200,7 @@ Architecture (all static):
 
 **The give-to-get decision — opinionated, and a modification of the stated scope.** A hard "share one path to unlock cloning" gate is the one part of the Phase-1 brief the evidence says to change: Scribd's upload-to-download bred junk and pirated uploads, ResearchGate's sharing economy ended in mass takedowns and litigation, and private-tracker ratio economies are the best-studied give-to-get systems and reliably produce hoarding, inequity, and low-quality contributions. A gate would also throttle the network exactly when it needs seeding, and hand every locked-out user a trivial bypass (`sy attach <git-url>` must keep working — bundles are public git repos; a "lock" would be theater). **Ship reciprocity as status, not access**: cloning from the registry is free and anonymous forever; *publishing* unlocks (a) a public **journey page** — `emit_map()`'s `knowledge.md` rendered via GitHub Pages from the author's registry-linked repo, the "journey map on public domain" from the brief, (b) the verified-badge listing and attribution chain (derived bundles carry `derived_from`, surfaced on listings), and (c) ranking weight (listing order = verify-freshness + adoption). If the founder later insists on a harder gate, the fallback is gating *registry search convenience* only, never `attach` — but build the status economy first and measure.
 
-Deliverables: registry repo + CI workflows + PR template; `paths.json` schema doc; `sy paths search/get`; `sy publish --list` (opens the pre-filled listing PR via `gh`); journey-page publisher (`sy journey --publish` emitting a scrubbed, WS3b-gated `knowledge.md` + static page); **5-10 seed paths you compile and publish yourself** — an empty registry is a dead registry, and seeding it is also the dogfood pass on 3a+3b.
+Deliverables: registry repo + CI workflows + PR template; `paths.json` schema doc; `sy paths search/get`; `sy publish --list` (opens the pre-filled listing PR via `gh`); journey-page publisher (`sy journey --publish` emitting a scrubbed, WS3b-gated `knowledge.md` + static page); **seed paths you compile and publish yourself — 5 minimum, 10 target** — an empty registry is a dead registry, and seeding it is also the dogfood pass on 3a+3b.
 
 Acceptance criteria: end-to-end loop on two machines — compile → publish → PR → CI green → merge → `sy paths search` finds it → `sy paths get` → attach at pinned SHA → complete a milestone → grade runs sandboxed; a listing PR pointing at a bundle with leaked learner state fails CI; a post-listing tampered repo is caught by SHA mismatch on `get`.
 
@@ -236,7 +236,7 @@ Acceptance criteria: ADR merged; a stage schema violation is impossible by const
 | Week | Milestone | Exit test |
 |---|---|---|
 | 1-2 | WS1a reliability core + WS2 CI live | Kill-and-resume compile; CI required on merge |
-| 3-4 | WS1b terminal + WS1c web security | Cross-origin POST test red-teamed; paste-submit works |
+| 3-4 | WS1b terminal + WS1c web security (1c spills ~0.5 wk into wk 5 alongside WS2) | Cross-origin POST test red-teamed; paste-submit works |
 | 5 | WS2 complete — **v0.2.0 on PyPI** | `uvx sylabis` clean-machine install; tagged release |
 | 6-7 | WS3a attach hardening + WS4.1 structured outputs | Hostile-bundle adversarial tests green; env-scrub test green |
 | 8 | WS3b `sy publish` scrubber | Zero-leak grep test on a fully-used bundle |
@@ -244,7 +244,7 @@ Acceptance criteria: ADR merged; a stage schema violation is impossible by const
 | 11 | WS4.2 agentic harvest + grader calibration fixes | Verified-or-dropped harvest; `unscored` semantics |
 | 12 | WS3d + float | Docs, threat-model note, registry PR SLA established |
 
-**Cross-cutting rules for every workstream:** every new pipeline stage ships a fixture (`fixtures/<stage>.json`) or every mock test breaks; every security fix ships an adversarial test in `tests/run_all.py`; `okf.py` remains the only frontmatter writer; grades come only from `submit_work`/`grade`; `actuate()` stays idempotent; and no telemetry, no phone-home, no learner data leaves the machine except through `sy publish`'s allowlist.
+**Cross-cutting rules for every workstream:** every new pipeline stage ships a fixture (`fixtures/<stage>.json`) or every mock test breaks; every security fix ships an adversarial test in `tests/run_all.py`; `okf.py` remains the only frontmatter writer; grades come only from `submit_work`/`grade`; `actuate()` stays idempotent; and no default telemetry or phone-home (opt-in consented ping only, per D19); no learner data leaves the machine except through `sy publish`'s allowlist.
 
 **Top three risks to the phase overall:** (1) WS3 scope creep into building a hosted service — the serverless static-index design is the guardrail; if a feature needs a server you run, it's Phase 2. (2) Solo-founder sequencing pressure to ship the registry before the attach sandbox — the week 6-7 gate is non-negotiable because the first hostile bundle arrives with the first stranger. (3) The give-to-get deviation from the original brief — resolved by shipping the status-based reciprocity design and defining the measurable fallback (gate search convenience, never `attach`) rather than relitigating; revisit with adoption data at the end of Phase 1.
 
@@ -252,9 +252,9 @@ Acceptance criteria: ADR merged; a stage schema violation is impossible by const
 
 # Phase 2 — Hosted MVP: Multi-User, BYOK + Vendor Key, Production-Ready
 
-Phase 2 turns sylabis from a local-first CLI into a hosted product without abandoning the local-first thesis. The strategy is **dual-mode (Zed/Cline pattern, explicitly not Cursor's)**: the open-source CLI stays free with BYOK forever and never proxies keys through our servers; the hosted product ("Sylabis Cloud") sells convenience — no-key onboarding, synced journeys, a hosted Reading Room, shareable verified-credential pages, and the GitHub grading bot. Phase 2 assumes Phase 1 hardening landed (typed errors instead of `SystemExit`, retries/schema validation in `llm.py`, per-stage model routing, prompt/model version stamping in bundles, repo CI). Where a Phase 1 item is a hard prerequisite it is called out explicitly.
+Phase 2 turns sylabis from a local-first CLI into a hosted product without abandoning the local-first thesis. The strategy is **dual-mode (Zed/Cline pattern, explicitly not Cursor's)**: the open-source CLI stays free with BYOK forever and never proxies keys through our servers; the hosted product ("Sylabis Cloud") sells convenience — no-key onboarding, synced journeys, a hosted Reading Room, shareable verified-credential pages, and the GitHub grading bot. Phase 2 assumes Phase 1 hardening landed (typed errors instead of `SystemExit`, retries/schema validation in `llm.py`, per-stage model routing, prompt/model version stamping in bundles, repo CI). Where a Phase 1 item is a hard prerequisite it is called out explicitly. A few Phase 1 deliverables also reappear below (publish scrubber, grader env/path fixes, copy-on-attach, local web hardening, calibration fixes, `learner_profile_hash`): they are budgeted **once**. On Track B of the master calendar they land in Phase 1 and Phase 2's mention is a verify-don't-rebuild prerequisite check; on Track A, where parts of Phase 1 were deferred, the Phase 2 slot is where the deferred item actually lands.
 
-**Timeline: 16 weeks solo, ~12 weeks with one contract hire (weeks 5–12, security/infra profile). Private beta at week 8, public launch at week 14.**
+**Timeline: ~16 weeks with one contract hire (weeks 5–12, security/infra profile); ~20 weeks solo. The launch-sequencing table below is the with-hire grid — private beta at week 8, public launch at week 14 on that grid; without the hire, same order, +4 weeks.**
 
 ---
 
@@ -269,14 +269,14 @@ Phase 2 turns sylabis from a local-first CLI into a hosted product without aband
 | Job orchestration | Hatchet (Lite mode, same Postgres) | Python-first, durable steps that match the staged compile pipeline, MIT-licensed, one extra container — not a Temporal cluster. Celery rejected (no durable intermediate state); Inngest rejected (TS-first, per-step pricing punishes multi-call LLM pipelines) |
 | Agent framework | None. Stay hand-rolled; adopt Anthropic structured outputs for compiler/grader stages | Sylabis is workflows, not agents; every framework except PydanticAI degrades the `--mock` fixture contract. Re-evaluate PydanticAI only if a rewrite is forced |
 | Code-execution sandbox | Phase 2a (hosted beta): gVisor (`runsc`) containers, `--network=none`, read-only rootfs, tmpfs workdir, cgroup CPU/mem/pids caps, 300s wall clock. Phase 2b (public): one-shot Fly Machines / Firecracker per grading job | Tier-3 executable grading is code-execution-as-a-service; a permissive Docker container is not enough for multi-tenant |
-| Hosting | Railway (web + worker + sandbox runner + managed Postgres); move Postgres to Render/Neon when PITR matters | ~$30–80/mo at MVP scale; ECS adds ops with no benefit |
+| Hosting | Railway (web + worker + sandbox runner + managed Postgres); move Postgres to Render/Neon when PITR matters | ~$40–90/mo at MVP scale (upper end covers the dedicated gVisor host); ECS adds ops with no benefit |
 | Observability | OpenTelemetry GenAI semantic conventions instrumented once in `llm.py`, OTLP → Langfuse Cloud | Vendor-portable; `llm.py` being the single choke point makes this a one-module retrofit |
 | Billing | Stripe: subscriptions + Billing for LLM tokens (price-synced markup) for vendor-key overage | Purpose-built for exactly this; spend caps/alerts first-class |
 | License | AGPL-3.0 core + proprietary cloud features (Plausible model) | Keeps OSI "open source" (load-bearing for the learner-owned-credential thesis), deters hosted competitors. FSL/sustainable-use rejected — losing the label costs more than it protects |
 
 ---
 
-## Workstream A — Hosted architecture (weeks 1–6)
+## Workstream A — Hosted architecture (weeks 1–6 window, 5 weeks effort)
 
 ### What stays exactly as-is
 - `okf.py` as sole frontmatter writer; bundle format unchanged; `journey.py` reading bundles directly from a filesystem root.
@@ -312,7 +312,7 @@ Two key modes, one rule: **we never see a BYOK key on the CLI, and we never stor
 3. **Hosted vendor key (the paid product):** our Anthropic org key, held only in the worker environment via the platform secret manager, never in the repo (gitleaks in CI from Phase 1). Every `LLM.call/chat` records tokens in/out, model, stage, tenant, and computed cost into `usage` — this instrumentation lives in `llm.py` alone.
 
 **Metering, caps, abuse prevention (all named, all launch-blocking for vendor-key mode):**
-- **COGS engineering first:** per-stage model routing (Haiku for claim-audit/explain-back, Sonnet for intake/sequence/emit), prompt caching on the 8 system prompts, Batch API for latency-tolerant compile stages (50% off). Target: ≤ $1–3 fully-loaded per compiled course. This is a Phase 1 deliverable that Phase 2 pricing depends on — verify it with real cost telemetry before setting the included-credit number.
+- **COGS engineering first:** per-stage model routing (Haiku for claim-audit/explain-back, Sonnet for intake/sequence/emit), prompt caching on the 8 system prompts, Batch API for latency-tolerant compile stages (50% off). Target: ≤$3 fully-loaded per compiled course ($1–3 expected). Model routing is a Phase 1 deliverable (WS1a.5); prompt caching and Batch API land in weeks 7–8 of the master calendar, before pricing is confirmed — verify it with real cost telemetry before setting the included-credit number.
 - **Hard spend cap** per tenant: default $25/mo of metered cost, user-raisable with a card on file; enforcement is a pre-call budget check in `llm.py` (fail with a typed `BudgetExceeded` the UI renders as an upgrade prompt, mid-compile jobs pause resumably rather than dying).
 - **Token-cost rate limits** (not request counts) per plan, token-bucket per tenant; concurrent-compile limit of 1 (free/BYOK) / 3 (Pro).
 - **No card-free vendor-key usage.** Free tier without a card = hosted BYOK. Card + phone verification gate the vendor key; block datacenter/VPN IP ranges on signup for vendor-key accounts.
@@ -338,12 +338,12 @@ Organized against OWASP LLM Top 10 (2025) and OWASP Agentic Top 10 (2026); ship 
 
 **Attach/supply-chain (ASI04):** copy-on-attach replaces symlink-attach for third-party sources (grading must never write back into someone else's checkout — journey.py:87–88); attached bundles are quarantined: Tier-3 executable mode disabled until the user explicitly trusts the bundle; record clone SHA + origin in bundle metadata; concept strings from attached courses tagged by origin so a hostile bundle can't silently poison `prior_knowledge`.
 
-**Privacy & publish path:** `sy publish` scrubber (the Phase 2 half of the sharing story): template-only export that hard-excludes `events.jsonl`, `grade.yaml`, `artifact.md`, `reflection.md`, portfolio claims, and the learner block in `course.yaml`; gitleaks-style secret/PII scan pre-push. Fix the two raw-profile leaks now: `compile.requested` must emit `learner_profile_hash` as `events.py`'s own comment specifies (compiler.py:20–21), and the learner block in emitted `course.yaml` moves to a gitignored sidecar.
+**Privacy & publish path:** `sy publish` scrubber (the Phase 2 half of the sharing story): template-only export that hard-excludes `events.jsonl`, `grade.yaml`, `artifact.md`, `reflection.md`, portfolio claims, and the learner block in `course.yaml`; gitleaks-style secret/PII scan pre-push. Fix the two raw-profile leaks now: `compile.requested` must emit `learner_profile_hash` as `events.py`'s own comment specifies (compiler.py:20–21), and the learner block is stripped at publish time per Phase 1 WS3b (no compile-time bundle-format change — the sidecar alternative is rejected to keep `journey.py` readers untouched).
 
 **Audit, evals, reliability:**
 - Immutable audit: every tool invocation, grade decision, and path-engine actuation lands in the append-only `events` table with prompt+model version stamps; grades are explainable end-to-end (tier outcomes + explain-back verdict all recorded — already mostly true, now queryable).
 - **Grader calibration eval harness** (the biggest trust gap): a labeled set of ~50 artifacts (good/overclaiming/plagiarized-style/misconception-laden) scored against live models weekly and on every prompt change; track claim-audit false-positive/negative rates and explain-back verdict accuracy. Promptfoo for the harness; red-team passes with garak before public launch. No prompt ships without the eval passing baseline.
-- Fix grade inflation before money touches grades: the `base_score=0.85` no-rubric default (grader.py:68) drops to explicit "ungraded-quality" status rather than a passing number; the 0.6 claim-audit floor (grader.py:82) is re-derived from the calibration set.
+- Fix grade inflation before money touches grades: the `base_score=0.85` no-rubric default (grader.py:68) drops to the explicit `unscored` status (same vocabulary as Phase 1 WS4.3, which carries the acceptance test) rather than a passing number; the 0.6 claim-audit floor (grader.py:82) is re-derived from the calibration set.
 - Reliability SLOs: compile p95 < 10 min, grade p95 < 3 min (Tier 3 sandbox included), 99.5% availability; Langfuse dashboards + platform alerts; a weekly restore-from-backup drill for Postgres and object storage (untested backups are not backups).
 
 **Ethics stance (published, not just internal):** humans stay accountable for high-stakes outcomes — a **grade appeal flow** ships at launch (learner requests re-grade with note → re-run with logged override capability); AI-role disclosure on every credential page (what sylabis did vs. what the learner did — the artifact-verbatim invariant makes this honest); 13+ age gate in ToS, no child-directed marketing (keeps COPPA out of scope; FERPA doesn't attach to adult B2C); data minimization — learner artifacts retained only while the account lives, export-everything and delete-everything endpoints at launch. Privacy policy + ToS + DPA with subprocessor list (Anthropic, Railway, Supabase, Stripe, Langfuse) at launch. **SOC 2 explicitly deferred** until the first enterprise questionnaire arrives (that's the buy signal; ~$45–55K and 9–12 months we don't spend yet) — but log-retention, access-control, and change-management habits start now so the eventual observation window is cheap.
@@ -377,7 +377,7 @@ $18 sits under the $20 prosumer ceiling while signaling above editor-tier $10. T
 **Deliverables & acceptance criteria**
 - [ ] Stripe integration: subscribe, meter, cap, overage invoice, cancel, refund — each exercised in test mode end-to-end.
 - [ ] Reconciliation job: Stripe metered usage vs. internal `usage` table, alert on >2% drift.
-- [ ] Pricing page + credential-page sharing live.
+- [ ] **Shareable verified-credential pages built and live** (~1 week: a WS A route rendering the bundle's existing `knowledge.md`/`grade.yaml` evidence as a public page — this is the Pro moat and growth loop, so it gets explicit build effort here, not just a mention). Pricing page live. The Pro-tier "GitHub grading bot" is scoped as the existing emitted `grade.yml` workflow hardened per WS C — no separate bot service is built in Phase 2.
 - [ ] Effort: 2 weeks (founder; Stripe token billing is private preview — apply for access in week 1, fallback is standard metered billing with a manually synced price table).
 
 ---
@@ -390,6 +390,8 @@ $18 sits under the $20 prosumer ceiling while signaling above editor-tier $10. T
 - **CLI distribution (feeds the funnel):** publish to PyPI; `uv tool install sylabis` / `uvx sylabis` as the headline install with pipx fallback; `sylabis-mcp` console script so Claude Desktop config is `{"command": "uvx", "args": ["--from", "sylabis", "sylabis-mcp"]}`; daily-cached version-check notice (env-var disableable, honor `DO_NOT_TRACK`); telemetry **off by default** with a first-run consent prompt — the GitHub CLI opt-out backlash is the cautionary tale for a trust-positioned product.
 
 **Deliverables:** staging + prod environments, deploy pipeline with rollback (Railway instant redeploy of prior image), runbook, status page, PyPI release automation (tag → build → publish). Effort: 1.5 weeks founder + ongoing.
+
+**Acceptance criteria:** (1) scripted restore of last night's Postgres dump + versioned R2 bucket into staging completes within the documented 4h RTO, exercised by the weekly drill with alert-on-failure; (2) one full rollback (redeploy of prior image) exercised in staging before public launch; (3) a git tag reaches PyPI with zero manual steps; (4) a staging synthetic-tenant smoke test (compile + grade) gates every prod deploy.
 
 ---
 
@@ -459,7 +461,7 @@ Alternates to A/B in the video vs. written app: "Duolingo teaches you vocabulary
 
 **Anticipated hard questions (prep written answers before the interview window):**
 - "Why won't Anthropic/OpenAI ship this?" → They ship tutors, not credentials; the moat is the grading calibration data + the open bundle format + the registry network, none of which a lab wants to own.
-- "How do you make money?" → Zed/Cline pattern: OSS core + BYOK free forever; Pro $16–20/mo vendor-key hosted tier (~$1–3 COGS per compiled course via batch + caching + per-stage model routing); Cohort/Team seats at $30–40 later. Named comparables, real margin math.
+- "How do you make money?" → Zed/Cline pattern: OSS core + BYOK free forever; Pro $18/mo vendor-key hosted tier (~$1–3 COGS per compiled course via batch + caching + per-stage model routing); Cohort seats at $35/seat later. Named comparables, real margin math.
 - "Solo?" → Answer above; name the cofounder-matching plan.
 - "Isn't this just prompts?" → Point at the grader's deterministic Tier 1, the executable rubric sandbox, the idempotent path engine, the self-test ship gate — the prompts are ~15% of the system.
 
@@ -512,26 +514,26 @@ Phase 1 = local-first product hardened + launched + shareable (BYOK, OSS core). 
 - 5–10 real users from the launch.
 
 **Must be live by interview window (if invited: Aug, decision by Aug 28):**
-- Phase 1 polish: `readline` in the REPL, API-error handling in `Agent.turn` so sessions don't crash, sandboxed Tier-3 execution (bubblewrap/Docker `--network=none` behind a pluggable interface) — turns the security story from "known gap" to "solved, here's the design."
-- Sharing seed: `sy publish` (template-scrub excluding events.jsonl/grades/artifacts/learner block — closes the privacy gaps that make sharing currently radioactive) + the static `paths.json` registry repo with 3–5 seed paths you compiled yourself.
+- Phase 1 polish: `readline` in the REPL, API-error handling in `Agent.turn` so sessions don't crash, sandboxed Tier-3 execution (bubblewrap/nsjail, `--network=none`-equivalent, behind the pluggable `SandboxRunner` interface per D8) — turns the security story from "known gap" to "solved, here's the design."
+- Sharing seed: `sy publish` (template-scrub excluding events.jsonl/grades/artifacts/learner block — closes the privacy gaps that make sharing currently radioactive) + the static `paths.json` registry repo with 5 seed paths you compiled yourself (10 target).
 - A usage dashboard you can screen-share: WAU, compile→submit→pass funnel, one week-over-week datapoint. Ten minutes, rapid-fire, numbers memorized.
 
 **Must be live by Demo Day (Dec 2) — or by the W27 application (~Nov 10) if F26 misses; the list is identical because it's just Phase 2:**
 - Hosted Pro in private beta: vendor-key mode (server-side key, per-stage model routing to Haiku/Sonnet + Batch API + prompt caching → ~$1–3 COGS/course), Stripe token billing with default spend cap, hosted Reading Room with auth, shareable verified-credential pages.
-- 20–50 weekly-active learners, a 6–8 week growth chart, and **first paying users** — even 5 × $16/mo changes the Demo Day slide from "project" to "company."
+- 20–50 weekly-active learners, a 6–8 week growth chart, and **first paying users** — even 5 × $18/mo changes the Demo Day slide from "project" to "company."
 - Registry with first externally-contributed paths (registry CI re-running `self_test()` + `verify.py` as the merge gate).
 
-**Honest solo-capacity note:** the above is ~2 engineer-months of work in ~4.5 calendar months alongside launch/support — feasible solo *only* because the P0 items are concentrated in single-file chokepoints and the test suite is already deterministic. The cut-line if behind: Phase 2 hosted sync can slip (Pro can launch as "hosted grading + credential pages" only); the registry can stay at 5 self-seeded paths; sandboxing cannot slip (it's the interview security answer), and instrumentation cannot slip (no metrics = no W27 story).
+**Honest solo-capacity note:** the above is ~3.5–4 engineer-months of work in ~4.5 calendar months alongside launch/support — feasible only with the Phase 2 contract hire and the cut-lines below; the P0 items concentrating in single-file chokepoints and the already-deterministic test suite are what keep it from being worse. The cut-line if behind: Phase 2 hosted sync can slip (Pro can launch as "hosted grading + credential pages" only); the registry can stay at 5 self-seeded paths; sandboxing cannot slip (it's the interview security answer), and instrumentation cannot slip (no metrics = no W27 story).
 
 ## 6. Week-by-week milestone table
 
 | Week | Dates | Theme | Milestones (exit criteria) |
 |---|---|---|---|
-| 0 | Jul 17–19 | App draft + P0 fixes | YC app first draft (one-liner, why-now, FMF answers). Retries/backoff + JSON repair in `llm.py`; typed compiler errors; stage checkpointing. Env-scrub + rubric-path validation + web CSRF/Host check. pyproject metadata + `__version__` + repo CI. |
-| 1 | Jul 20–26 | **Launch + submit YC** | Mon: tag v0.2.0, publish to PyPI. Tue/Wed: Show HN + demo GIF + X thread + MCP directories. Wed–Thu: record 1-min founder video (2–3 takes) + 2–3 min product demo. **Fri Jul 24–Sat Jul 25: submit YC app** (before Jul 27 8pm PT). Reddit/lobste.rs follow-ups. Exit: app in, ≥5 real users, launch metrics captured. |
+| 0 | Jul 17–19 | P0 fixes start | Start the P0 set, finish by Wed Jul 22: retries/backoff + JSON repair in `llm.py`; typed compiler errors; stage checkpointing. Env-scrub + rubric-path validation + web CSRF/Host check. |
+| 1 | Jul 20–26 | **Launch + submit YC** | Mon–Tue: wrap P0s, pyproject metadata + `__version__` + repo CI, YC app first draft (one-liner, why-now, FMF answers); tag v0.2.0, publish to PyPI. Tue/Wed: Show HN + demo GIF + X thread + MCP directories. Wed–Thu: record 1-min founder video (2–3 takes) + 2–3 min product demo. **Fri Jul 24–Sat Jul 25: submit YC app** (before Jul 27 8pm PT). Reddit/lobste.rs follow-ups. Exit: app in, ≥5 real users, launch metrics captured. |
 | 2 | Jul 27–Aug 2 | Stabilize + instrument | Fix top launch-reported bugs same-day (public velocity signal). Opt-in telemetry / usage counting live. `readline` + agent API-error recovery. Start metrics log: WAU, compiles, submissions, passes. |
 | 3 | Aug 3–9 | Sandbox + publish | Tier-3 sandbox (network-none, rlimits, pluggable). `sy publish` template-scrubber with hard-excludes + secret scan. Weekly metrics post #1 (public build-in-public thread). |
-| 4 | Aug 10–16 | Registry seed | `sylabis-registry` repo + paths.json + CI gate (self_test + verify). Seed 3–5 paths from your own journeys. `sy paths search`. Interview prep doc: 25 rapid-fire Q&A, numbers memorized. |
+| 4 | Aug 10–16 | Registry seed | `sylabis-registry` repo + paths.json + CI gate (self_test + verify). Seed 5 paths from your own journeys (10 target). `sy paths search`. Interview prep doc: 25 rapid-fire Q&A, numbers memorized. |
 | 5 | Aug 17–23 | Interview-ready | Usage dashboard (even a static page). Mock interviews ×2 (10-min format). Second distribution push: 2 niche communities + credential-page prototype. *Interview could land any time this window.* |
 | 6 | Aug 24–30 | **YC decision (by Aug 28)** | If yes: replan around batch start, book SF. If no: file the feedback verbatim into the W27 app doc; no wallowing — Phase 2 build starts Monday. |
 | 7–8 | Aug 31–Sep 13 | Phase 2 core | Hosted service skeleton: auth, per-user journeys, server-side vendor key, per-stage model routing + Batch/caching (COGS target ≤$3/course measured, not estimated). |
@@ -540,7 +542,7 @@ Phase 1 = local-first product hardened + launched + shareable (BYOK, OSS core). 
 | 13 | Oct 12–18 | W27 app (if needed) | Draft W27 application folding in F26 feedback + real growth chart + revenue line. Begin YC cofounder matching in parallel. |
 | 14–15 | Oct 19–Nov 1 | Submit early | Re-record videos with live hosted product. **Submit W27 app ~3 weeks before the ~Nov 10 deadline.** |
 | 16–17 | Nov 2–15 | Traction compounding | First paying users → first MRR datapoint. Keep weekly public updates (partners do look). |
-| 18–20 | Nov 16–Dec 2 | Batch/Demo Day track | If in F26: Demo Day Dec 2 with Phase 2 live, 20–50 WAU, first revenue, registry with external contributors. If on W27 track: same milestones become the interview story. |
+| 18–20 | Nov 16–Dec 2 (2.5 wks) | Batch/Demo Day track | If in F26: Demo Day Dec 2 with Phase 2 live, 20–50 WAU, first revenue, registry with external contributors. If on W27 track: same milestones become the interview story. |
 
 **Three rules for the whole run:** (1) never let a week pass without a public, dated artifact (release, metrics post, or shipped feature) — the commit log *is* the solo-founder pitch; (2) every growth experiment must double as product (credential pages, registry, grading bot), because a solo founder cannot afford pure-marketing hours; (3) the metrics log starts this week or the W27 story doesn't exist.
 
@@ -556,7 +558,7 @@ Phase 1's standalone plan is 12 weeks and Phase 2's is 16; the YC overlay compre
 
 | Calendar | Phase-plan content that lands | YC milestone |
 |---|---|---|
-| **Wk 0 (Jul 17–19)** | Phase 1 WS1a items 1–4 compressed to P0 (retries, typed errors, JSON repair, checkpointing); grader env-scrub + rubric-path validation (WS3a item 1, minimal form); web CSRF/Host check (WS1c item 1, minimal form); pyproject metadata + CI (WS2 items 1–2) | App draft |
+| **Wk 0 (Jul 17–19)** | Phase 1 WS1a items 1–4 compressed to P0 (retries, typed errors, JSON repair, checkpointing); grader env-scrub + rubric-path validation (WS3a item 1, minimal form); web CSRF/Host check (WS1c item 1, minimal form); pyproject metadata + CI (WS2 items 1–2, spilling into early Wk 1) | P0s started, done by Wed Jul 22 |
 | **Wk 1 (Jul 20–26)** | v0.2.0 on PyPI; launch (Show HN + demo GIF + MCP directories) | **Submit YC app Jul 24–25** |
 | **Wk 2 (Jul 27–Aug 2)** | Launch-bug fixes; readline + agent error recovery (WS1b items 1–2); metrics instrumentation | Growth log starts |
 | **Wk 3 (Aug 3–9)** | Full sandbox behind `SandboxRunner` (WS3a); `sy publish` scrubber (WS3b) | Build-in-public post #1 |
@@ -566,13 +568,13 @@ Phase 1's standalone plan is 12 weeks and Phase 2's is 16; the YC overlay compre
 | **Wk 9–10 (Sep 14–27)** | Phase 2 WS B + D: key vault, metering, caps, Stripe; Pro private beta; credential pages | First growth loop live |
 | **Wk 11–12 (Sep 28–Oct 11)** | Phase 2 WS C: sandbox on gVisor, injection fixtures, grader eval baseline, calibration fixes; registry opens to external PRs; Phase 1 leftovers (Textual TUI, agentic harvest) slot into gaps | 20+ WAU target, WoW chart |
 | **Wk 13–15 (Oct 12–Nov 1)** | Transparency page, ToS/privacy/DPA, appeal flow; W27 app if needed, submitted ~3 weeks early | **W27 app (~Nov 10 deadline)** |
-| **Wk 16–20 (Nov 2–Dec 2)** | Phase 2 WS E completion, red-team, load test, public Pro launch with caps | First MRR; **Demo Day Dec 2** if in F26 |
+| **Wk 16–18+ (Nov 2–Dec 2)** | Phase 2 WS E completion, red-team, load test, public Pro launch with caps | First MRR; **Demo Day Dec 2** if in F26 |
 
-**Cut-lines if behind** (from the YC section, restated as policy): hosted journey *sync* can slip (Pro launches as hosted grading + credential pages); the registry can stay at 5 self-seeded paths; the Textual TUI and agentic harvest can slip indefinitely. **Sandboxing and metrics instrumentation cannot slip** — one is the interview security answer, the other is the W27 story.
+**Cut-lines if behind** (from the YC section, restated as policy): hosted journey *sync* can slip (Pro launches as hosted grading + credential pages); the registry can stay at 5 self-seeded paths; agentic harvest can slip indefinitely (the brief's multi-agent element asks to *explore options*, which the WS4 ADR satisfies regardless). Deferring the Textual TUI is a deliberate deprioritization of a named Phase-1 brief element — the hardened readline REPL is the interim terminal surface, and the Textual app gets a hard landing slot in wk 11–12 rather than slipping indefinitely. **Sandboxing and metrics instrumentation cannot slip** — one is the interview security answer, the other is the W27 story.
 
 ## Track B — steady (no YC, or post-rejection without reapplication pressure)
 
-Run Phase 1 exactly as written (12 weeks, WS1 → WS2 → WS3 → WS4 with the week 6–7 attach-hardening gate), then Phase 2 as written (16 weeks solo, private beta week 8, public launch week 14). Total ≈7 months to hosted public launch. Every acceptance criterion is identical; only the ordering pressure differs.
+Run Phase 1 exactly as written (12 weeks, WS1 → WS2 → WS3 → WS4 with the week 6–7 attach-hardening gate), then Phase 2 as written (~16 weeks with the hire, ~20 solo; private beta week 8, public launch week 14 on the with-hire grid). Total ≈7–8 months to hosted public launch. Every acceptance criterion is identical; only the ordering pressure differs.
 
 ---
 
@@ -586,8 +588,8 @@ The phase sections carry their own risk lists; these are the risks that span the
 | R2 | **Vendor-key cost blowout/abuse** | Medium | High | Pre-call budget check in `llm.py` (single choke point), no card-free vendor usage, token-cost rate limits, per-tenant + global circuit breakers |
 | R3 | **Sandbox escape in multi-tenant grading** | Low | Critical | Defense in depth (gVisor + no-network + RO rootfs + cgroups), escape-test suite in CI, Firecracker before scale; launching hosted beta on gVisor is a documented accepted risk |
 | R4 | **Grade-trust incident** — a public credential page backed by a miscalibrated grade | Medium | High | Calibration eval harness gates every prompt change; base-score inflation fixed before money touches grades; appeal flow at launch; version stamps make any grade reconstructable |
-| R5 | **Solo-founder overload** — ~2 engineer-months in ~4.5 calendar months alongside launch/support | High | High | P0 items concentrate in single-file choke points; contract security/infra hire weeks 5–12 of Phase 2; cut-lines predefined; boring-monolith rule ("if it needs a server you babysit, it's Phase 2; if it needs Kubernetes, it's never") |
-| R6 | **Registry cold start** | High | Medium | Self-seed 5–10 paths; journey pages valuable at zero users; status-based reciprocity instead of a gate that throttles seeding |
+| R5 | **Solo-founder overload** — ~3.5–4 engineer-months in ~4.5 calendar months alongside launch/support | High | High | P0 items concentrate in single-file choke points; contract security/infra hire weeks 5–12 of Phase 2; cut-lines predefined; boring-monolith rule ("if it needs a server you babysit, it's Phase 2; if it needs Kubernetes, it's never") |
+| R6 | **Registry cold start** | High | Medium | Self-seed 5 paths minimum (10 target); journey pages valuable at zero users; status-based reciprocity instead of a gate that throttles seeding |
 | R7 | **YC F26 miss** | High (base rate ~1%) | Low | The W27 path *is* the plan: written feedback folded in, growth chart from Aug–Oct, first revenue by Nov; nothing in the plan is wasted if both miss |
 | R8 | **AGPL relicense friction** | Low now, grows | Medium | Execute while contributor count ≈1 (`git shortlog -sne` check); DCO going forward |
 | R9 | **External dependency slips** (Stripe token-billing preview, gVisor-on-Railway, Anthropic org rate limits) | Medium | Medium | Fallbacks pre-named: standard metered billing; dedicated sandbox box (decide wk 6 of Phase 2); rate-limit review requested before public launch |
