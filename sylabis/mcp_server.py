@@ -267,7 +267,7 @@ class MCPServer:
         (m_dir / "artifact.md").write_text(args["artifact"])
         (m_dir / "reflection.md").write_text(args["reflection"])
 
-        from .grader import grade
+        from .grader import grade, path_engine_view
         from .path_engine import decide, actuate
 
         llm = self._llm()
@@ -277,7 +277,8 @@ class MCPServer:
             (m for m in self._manifest()["milestones"] if m["id"] == mid), None)
         if milestone_entry is None:
             raise _ToolError(f"{mid!r} graded but absent from course.yaml.")
-        decisions = decide(self.course_dir, milestone_entry, result)
+        decisions = decide(self.course_dir, milestone_entry,
+                           path_engine_view(result))
         actions = actuate(self.course_dir, decisions, llm=llm)
 
         lines = [result["feedback"], "", "Path decisions:"]

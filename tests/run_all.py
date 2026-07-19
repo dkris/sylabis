@@ -439,8 +439,9 @@ def test_journey_map_is_okf(tmp):
 
 def test_attach_connects_other_repos(tmp):
     """Cross-repo connection: a course living anywhere joins the journey
-    (path -> symlink, git URL -> clone) and its knowledge counts."""
+    (path -> copy, git URL -> clone) and its knowledge counts."""
     import subprocess
+    from sylabis.errors import AttachError
     home = _journey_home(tmp)
 
     elsewhere = tmp / "elsewhere" / "survey"
@@ -472,7 +473,7 @@ def test_attach_connects_other_repos(tmp):
 
     try:
         journey.attach(home, str(tmp))  # not a course bundle
-    except SystemExit as e:
+    except AttachError as e:
         assert "course.yaml" in str(e)
     else:
         raise AssertionError("attaching a non-course must fail loudly")

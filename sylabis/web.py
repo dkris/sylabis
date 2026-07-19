@@ -787,7 +787,8 @@ lf.addEventListener('submit',async e=>{
                 "← journey</a>",
                 f'<h1 style="margin-top:16px">'
                 f"{html.escape(manifest['meta']['title'])}</h1>"]
-        target = manifest.get("learner", {}).get("target_artifact", "")
+        target = (manifest.get("target_artifact")  # published templates
+                  or manifest.get("learner", {}).get("target_artifact", ""))
         if target:
             body.append(f'<p class="lead">{html.escape(target)}</p>')
         for m in manifest["milestones"]:

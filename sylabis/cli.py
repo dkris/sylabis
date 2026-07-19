@@ -24,10 +24,10 @@ from pathlib import Path
 
 import yaml
 
-from . import __version__, journey
+from . import __version__, journey, sandbox
 from .compiler import compile_course
 from .errors import SylabisError
-from .grader import grade as run_grade
+from .grader import grade as run_grade, path_engine_view
 from .llm import LLM
 from .path_engine import decide, actuate
 
@@ -81,6 +81,9 @@ def _main(argv: list[str] | None = None):
     su.add_argument("--hours", type=float, default=None,
                     help="hours you actually spent")
     su.add_argument("--mock", action="store_true")
+    su.add_argument("--unsandboxed", action="store_true",
+                    help="run bundle rubric scripts without bwrap/nsjail "
+                         "(prints a warning naming the bundle's origin)")
     home_flag(su)
 
     j = sub.add_parser("journey", help="progress + the knowledge map")
@@ -93,8 +96,20 @@ def _main(argv: list[str] | None = None):
 
     at = sub.add_parser("attach", help="connect a course that lives in "
                                        "another repo or directory")
-    at.add_argument("source", help="git URL (clones) or local path (links)")
+    at.add_argument("source", help="git URL (clones) or local path (copies)")
     home_flag(at)
+
+    pub = sub.add_parser("publish",
+                         help="scrub a course into a shareable template")
+    pub.add_argument("course",
+                     help="course name in the journey, or a path to a bundle")
+    pub.add_argument("--to", dest="dest", required=True,
+                     help="output directory for the template")
+    pub.add_argument("--author", default="",
+                     help="author handle recorded in the publish manifest")
+    pub.add_argument("--license", default="CC-BY-4.0",
+                     help="SPDX license id (mandatory; default CC-BY-4.0)")
+    home_flag(pub)
 
     s = sub.add_parser("serve", help="MCP stdio server (journey-wide "
                                      "without a course dir)")
@@ -118,6 +133,9 @@ def _main(argv: list[str] | None = None):
     g.add_argument("--hours-actual", type=float, default=None)
     g.add_argument("--skip-tier3", action="store_true",
                    help="skip exemplar-calibrated Tier 3 scoring")
+    g.add_argument("--unsandboxed", action="store_true",
+                   help="run bundle rubric scripts without bwrap/nsjail "
+                        "(prints a warning naming the bundle's origin)")
     g.add_argument("--mock", action="store_true")
 
     args = p.parse_args(argv)
@@ -202,6 +220,15 @@ def _main(argv: list[str] | None = None):
         print(f"Attached {dest.name!r} to the journey.")
         _print_step(journey.course_next(dest))
 
+    elif args.cmd == "publish":
+        from .publish import publish_course  # lazy: only the scrubber needs it
+        src = Path(args.course).expanduser()
+        if not (src / "course.yaml").exists():
+            src = journey.course_dir(journey.home(args.home), args.course)
+        out = publish_course(src, Path(args.dest), author=args.author,
+                             license=args.license)
+        print(f"Published template: {out}")
+
     elif args.cmd == "serve":
         from .mcp_server import MCPServer  # lazy: stdio server pulls no deps
         MCPServer(Path(args.course_dir) if args.course_dir else None,
@@ -217,7 +244,8 @@ def _main(argv: list[str] | None = None):
         result = _grade_and_adapt(Path(args.course_dir), args.milestone_id,
                                   LLM(mock=args.mock),
                                   hours_actual=args.hours_actual,
-                                  skip_tier3=args.skip_tier3)
+                                  skip_tier3=args.skip_tier3,
+                                  unsandboxed=args.unsandboxed)
         sys.exit(0 if result["passed"] else 1)
 
 
@@ -260,10 +288,38 @@ def _submit(args) -> None:
         sys.exit(1)
     step = ready[0]
     cdir = journey.course_dir(home, step["course"])
-    result = _grade_and_adapt(cdir, step["milestone_id"], LLM(mock=args.mock),
-                              hours_actual=args.hours)
+    grade_kw = {"hours_actual": args.hours,
+                "unsandboxed": getattr(args, "unsandboxed", False)}
+    try:
+        result = _grade_and_adapt(cdir, step["milestone_id"],
+                                  LLM(mock=args.mock), **grade_kw)
+    except sandbox.ConsentRequired as e:
+        # First grade of an attached bundle that declares rubric scripts:
+        # list them, ask once, record the decision per bundle. On a
+        # non-interactive stdin the typed error propagates instead of
+        # hanging (main() renders it) — nothing was executed.
+        if not _confirm_consent(e):
+            raise
+        sandbox.record_trust(cdir, e.source, e.scripts)
+        result = _grade_and_adapt(cdir, step["milestone_id"],
+                                  LLM(mock=args.mock), **grade_kw)
     journey.emit_map(home)
     sys.exit(0 if result["passed"] else 1)
+
+
+def _confirm_consent(e: "sandbox.ConsentRequired") -> bool:
+    """Interactive consent prompt for an attached bundle's rubric
+    scripts. Returns False (never blocks) when stdin isn't a terminal."""
+    if not sys.stdin.isatty():
+        return False
+    print(f"\nThis bundle was attached from: {e.source}")
+    print("Grading will execute the rubric scripts it declares:")
+    for s in e.scripts:
+        print(f"  - {s}")
+    print("They run under bwrap/nsjail when available; otherwise directly "
+          "with a scrubbed environment (a warning will say so).")
+    answer = input("Run these scripts? [y/N] ")
+    return answer.strip().lower() in ("y", "yes")
 
 
 def _grade_and_adapt(course_dir: Path, milestone_id: str, llm: LLM,
@@ -275,7 +331,7 @@ def _grade_and_adapt(course_dir: Path, milestone_id: str, llm: LLM,
     manifest = yaml.safe_load((course_dir / "course.yaml").read_text())
     milestone = next(m for m in manifest["milestones"]
                      if m["id"] == milestone_id)
-    decisions = decide(course_dir, milestone, result)
+    decisions = decide(course_dir, milestone, path_engine_view(result))
     for d in decisions:
         print(f"\n>> {d['action']}: {d['target']}")
     for line in actuate(course_dir, decisions, llm=llm):

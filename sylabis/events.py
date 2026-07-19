@@ -38,5 +38,11 @@ def emit(course_dir: Path, event_type: str, payload: dict) -> None:
 #                        hours_actual, hours_estimated}
 #   path.decision       {signal, action, milestone_id}
 #   sidequest.unlocked  {sidequest_id, trigger} (emitted by path actuation)
+#   harvest.dropped     {source_id, locator, locator_kind, verification}
+#                       (unverifiable locator dropped before sequencing)
+#   compile.warning     {stage, reason, ...} (reasons: verification_drop_floor
+#                       {total_sources, unverifiable}, milestone_source_floor
+#                       {milestone_id, missing_source_ids})
+#   course.published    {dest, license, author, sylabis_version}
 #   remedial.injected   {remedial_id, parent_milestone_id, concept}
 #   course.completed    {total_hours, milestones_passed}

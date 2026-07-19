@@ -361,8 +361,10 @@ def test_llm_usage_events_zeroed_and_schema_complete_in_mock(tmp):
     course = compile_ws(tmp, SpyLLM())
     usage = [e for e in events_of(course) if e["type"] == "llm.usage"]
     stages = [e["payload"]["stage"] for e in usage]
-    assert stages == ["intake", "harvest", "sequence",
-                      *[f"lesson_{m}" for m in MILESTONE_IDS]]
+    assert stages[:3] == ["intake", "harvest", "sequence"]
+    # WS4.2: lesson calls run in a bounded pool, so their usage events
+    # land in completion order — assert one event per lesson, not order.
+    assert sorted(stages[3:]) == sorted(f"lesson_{m}" for m in MILESTONE_IDS)
     for e in usage:
         assert e["schema"] == 1
         for key in ("id", "ts", "type", "payload"):

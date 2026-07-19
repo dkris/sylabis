@@ -6,6 +6,7 @@ curricula connect instead of restarting from zero. All state is read from
 the course bundles on disk — the journey owns no database and no copies,
 so it can never disagree with the courses it describes.
 """
+import hashlib
 import os
 import re
 import shutil
@@ -16,8 +17,16 @@ from pathlib import Path
 import yaml
 
 from . import okf
+from .errors import AttachError
 
 COURSES_SUBDIR = "courses"
+
+# Provenance record written into every attached bundle (WS3a): where it
+# came from, the commit it was pinned at, when it joined the journey,
+# and a fingerprint of every grade record that PRE-DATED the attach —
+# the mechanism prior_knowledge() uses to ignore grades the learner
+# did not earn (see knowledge()).
+ATTACH_PROVENANCE = ".sylabis-attach.yaml"
 
 
 def home(explicit: Path | str | None = None) -> Path:
@@ -60,10 +69,14 @@ _GIT_PREFIXES = ("http://", "https://", "git@", "ssh://", "file://")
 
 
 def attach(home_dir: Path, source: str) -> Path:
-    """Connect content that lives elsewhere: a git URL clones, a local path
-    symlinks. Either way the course joins the journey under courses/ and
-    its verified knowledge counts like knowledge from any other course —
-    the connection layer does not care which repo a course came from."""
+    """Connect content that lives elsewhere: a git URL clones, a local
+    path COPIES. Never a symlink: grading and path actuation mutate the
+    attached bundle, and must never corrupt the original checkout
+    (WS3a copy-on-attach). Either way the course joins the journey under
+    courses/ with a provenance record (source, pinned commit, attach
+    time, preexisting-grade fingerprints) and its verified knowledge
+    counts like knowledge from any other course — once the learner earns
+    it (see knowledge())."""
     root = Path(home_dir) / COURSES_SUBDIR
     root.mkdir(parents=True, exist_ok=True)
 
@@ -73,20 +86,53 @@ def attach(home_dir: Path, source: str) -> Path:
         proc = subprocess.run(["git", "clone", "--quiet", source, str(dest)],
                               capture_output=True, text=True)
         if proc.returncode != 0:
-            raise SystemExit(f"git clone failed: {proc.stderr.strip()}")
+            raise AttachError(f"git clone failed: {proc.stderr.strip()}")
         if not (dest / "course.yaml").exists():
             shutil.rmtree(dest)
-            raise SystemExit(f"{source} is not a course bundle "
-                             "(no course.yaml at its root)")
+            raise AttachError(f"{source} is not a course bundle "
+                              "(no course.yaml at its root)")
+        sha = subprocess.run(["git", "-C", str(dest), "rev-parse", "HEAD"],
+                             capture_output=True, text=True)
+        commit = sha.stdout.strip() if sha.returncode == 0 else None
+        _record_attach(dest, source, commit)
         return dest
 
     src = Path(source).expanduser().resolve()
     if not (src / "course.yaml").exists():
-        raise SystemExit(f"{source} is not a course bundle "
-                         "(no course.yaml at its root)")
+        raise AttachError(f"{source} is not a course bundle "
+                          "(no course.yaml at its root)")
     dest = _unclaimed(root / src.name)
-    dest.symlink_to(src, target_is_directory=True)
+    shutil.copytree(src, dest, symlinks=True)
+    _record_attach(dest, source, commit=None)
     return dest
+
+
+def _record_attach(dest: Path, source: str, commit: str | None) -> None:
+    """Provenance stamp inside the attached copy. preexisting_grades
+    fingerprints (SHA-256) every grade.yaml present AT attach time: a
+    grade the learner later earns rewrites that file (new graded_at,
+    attempt), so a changed hash is the signal that the work was done
+    here, while an unchanged hash marks a grade that arrived with the
+    bundle — possibly hand-edited by its author — which must never seed
+    the learner's prior knowledge."""
+    pre = {p.parent.name: hashlib.sha256(p.read_bytes()).hexdigest()
+           for p in sorted(dest.glob("*/grade.yaml"))}
+    (dest / ATTACH_PROVENANCE).write_text(yaml.dump({
+        "schema": 1,
+        "source": source,
+        "commit": commit,
+        "attached_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "preexisting_grades": pre,
+    }, default_flow_style=False))
+
+
+def attach_info(cdir: Path) -> dict | None:
+    """The attach provenance record for a course, or None when the
+    course is local (compiled in this journey)."""
+    p = Path(cdir) / ATTACH_PROVENANCE
+    if not p.exists():
+        return None
+    return yaml.safe_load(p.read_text()) or {}
 
 
 def milestone_passed(cdir: Path, milestone_id: str) -> bool:
@@ -147,34 +193,56 @@ def submittable(home_dir: Path) -> list[dict]:
 def knowledge(home_dir: Path) -> list[dict]:
     """Verified concepts across every course, each with its evidence trail.
     A concept is verified when a milestone that introduces it has a passing
-    grade — the same standard the portfolio uses, read from the same files."""
+    grade — the same standard the portfolio uses, read from the same files.
+
+    Every evidence row carries `origin`: 'local' for courses compiled in
+    this journey, 'attached:<source>' for attached bundles. Evidence in an
+    attached bundle additionally carries `preexisting: True` when its
+    grade.yaml is byte-identical to the fingerprint recorded at attach
+    time — a grade that shipped WITH the bundle, not one the learner
+    earned here. Doing the attached course's work rewrites grade.yaml,
+    so earned grades never match the fingerprint and count fully."""
     entries: dict[str, dict] = {}
     for cdir in course_dirs(home_dir):
         manifest = yaml.safe_load((cdir / "course.yaml").read_text())
         title = manifest["meta"]["title"]
+        info = attach_info(cdir)
+        origin = f"attached:{info.get('source', '?')}" if info else "local"
+        pre = (info or {}).get("preexisting_grades") or {}
         for m in manifest.get("milestones", []):
             if not milestone_passed(cdir, m["id"]):
                 continue
-            g = yaml.safe_load((cdir / m["id"] / "grade.yaml").read_text()) or {}
+            gpath = cdir / m["id"] / "grade.yaml"
+            g = yaml.safe_load(gpath.read_text()) or {}
             cp_path = cdir / m["id"] / "checkpoint.yaml"
             if not cp_path.exists():
                 continue
             cp = yaml.safe_load(cp_path.read_text()) or {}
+            row = {"course": cdir.name, "course_title": title,
+                   "milestone_id": m["id"], "grade": g.get("grade"),
+                   "graded_at": g.get("graded_at"), "origin": origin}
+            if m["id"] in pre and hashlib.sha256(
+                    gpath.read_bytes()).hexdigest() == pre[m["id"]]:
+                row["preexisting"] = True
             for concept in cp.get("core_concepts") or []:
                 key = " ".join(concept.lower().split())
                 entry = entries.setdefault(key, {"concept": concept,
                                                  "evidence": []})
-                entry["evidence"].append({
-                    "course": cdir.name, "course_title": title,
-                    "milestone_id": m["id"], "grade": g.get("grade"),
-                    "graded_at": g.get("graded_at")})
+                entry["evidence"].append(dict(row))
     return sorted(entries.values(), key=lambda e: e["concept"].lower())
 
 
 def prior_knowledge(home_dir: Path) -> list[str]:
     """What every new compile may assume: the verified concepts. This is
-    the connection — course N+1 builds on what course N proved."""
-    return [e["concept"] for e in knowledge(home_dir)]
+    the connection — course N+1 builds on what course N proved.
+
+    Excludes concepts whose ONLY evidence is a pre-existing grade record
+    in an attached bundle (grade.yaml unchanged since attach — see
+    knowledge()): a hand-edited `passed: true` in someone else's bundle
+    must never seed the next compile. Concepts the learner verifies by
+    doing the attached course's work count fully."""
+    return [e["concept"] for e in knowledge(home_dir)
+            if any(not ev.get("preexisting") for ev in e["evidence"])]
 
 
 def emit_map(home_dir: Path) -> Path | None:

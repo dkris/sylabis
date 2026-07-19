@@ -14,6 +14,16 @@ WS1a reliability core:
 - .call_json() adds per-stage required-keys validation with ONE repair
   round; second failure raises SchemaError. The grader wave should use
   it too (validate_stage/STAGE_SCHEMAS cover audit/explain/tier3).
+
+WS4.1 structured outputs:
+- On live calls, .call() sends the stage's JSON Schema (from
+  prompts.STAGE_OUTPUT_SCHEMAS — the prompt+schema pair is the stage)
+  through the API's output_config.format mechanism, so a schema
+  violation is impossible by construction on the request side.
+- The stdlib validation above stays as belt-and-suspenders: it is what
+  mock mode validates against, and the one-round repair loop still
+  covers any live response the API constraint could not (SDK/API
+  drift). The mock seam stays at .call() — fixtures are unchanged.
 """
 import json
 import time
@@ -22,6 +32,7 @@ from dotenv import load_dotenv; load_dotenv()
 
 from . import events
 from .errors import ModelError, SchemaError, TruncationError
+from .prompts import stage_output_schema
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
@@ -200,6 +211,13 @@ class LLM:
             return val if isinstance(val, str) else text
 
         model = stage_model(stage)
+        extra = {}
+        schema = stage_output_schema(stage)
+        if schema is not None:
+            # Structured outputs (anthropic>=0.117 output_config.format):
+            # the API constrains generation to the stage's JSON Schema.
+            extra["output_config"] = {
+                "format": {"type": "json_schema", "schema": schema}}
         resp, retries = retry_call(
             lambda: self.client.messages.create(
                 model=model,
@@ -207,6 +225,7 @@ class LLM:
                 temperature=0,  # one-shot stages are reproducible by design
                 system=system,
                 messages=[{"role": "user", "content": user}],
+                **extra,
             ),
             what=f"stage {stage!r}")
         usage = getattr(resp, "usage", None)
