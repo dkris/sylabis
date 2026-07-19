@@ -12,6 +12,7 @@ import yaml
 
 from . import events
 from . import journey
+from . import okf
 from .errors import SylabisError
 from .llm import LLM
 
@@ -198,7 +199,7 @@ class JourneyTools:
             else:
                 g = yaml.safe_load(gpath.read_text()) or {}
                 verdict = "passed" if g.get("passed") else "not yet"
-                status = (f"{verdict} — grade {g.get('grade', 0):.0%}, "
+                status = (f"{verdict} — grade {okf.grade_token(g)}, "
                           f"attempt {g.get('attempt', 1)}")
             lines.append(f"{m['id']}: {status}")
         return "\n".join(lines)

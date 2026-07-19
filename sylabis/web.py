@@ -40,6 +40,7 @@ from urllib.parse import parse_qs, urlparse
 import yaml
 
 from . import journey
+from . import okf
 from .tools import JourneyTools, ToolError, _safe_id
 
 # sylabis design tokens (design-system project, tokens/*.css) — editorial,
@@ -755,9 +756,12 @@ lf.addEventListener('submit',async e=>{
             body.append("<h2>Verified concepts</h2><table>")
             for e in know:
                 refs = "<br>".join(
-                    f'<a href="/course/{ev["course"]}/doc?p=portfolio/claims/'
-                    f'{ev["milestone_id"]}.md">{html.escape(ev["course_title"])}'
-                    f' · {html.escape(ev["milestone_id"])}</a>'
+                    (f'<a href="/course/{ev["course"]}/doc?p=portfolio/claims/'
+                     f'{ev["milestone_id"]}.md">{html.escape(ev["course_title"])}'
+                     f' · {html.escape(ev["milestone_id"])}</a>'
+                     if ev.get("has_claim")
+                     else f'{html.escape(ev["course_title"])} · '
+                          f'{html.escape(ev["milestone_id"])} (unscored)')
                     for ev in e["evidence"])
                 body.append(f"<tr><td><strong>{html.escape(e['concept'])}"
                             f"</strong></td><td>{refs}</td></tr>")
@@ -796,7 +800,7 @@ lf.addEventListener('submit',async e=>{
             if journey.milestone_passed(cdir, m["id"]):
                 g = yaml.safe_load(gpath.read_text()) or {}
                 status = (f'<span class="tag pass">✓ passed · '
-                          f'{g.get("grade", 0):.0%}</span>')
+                          f'{okf.grade_token(g)}</span>')
             elif gpath.exists():
                 g = yaml.safe_load(gpath.read_text()) or {}
                 status = (f'<span class="tag fail">attempt '
@@ -884,7 +888,7 @@ understanding, not polish.</p>
         gy = yaml.safe_load((cdir / mid / "grade.yaml").read_text()) or {}
         cp = yaml.safe_load((cdir / mid / "checkpoint.yaml").read_text()) or {}
         passed = bool(gy.get("passed"))
-        grade_pct = f"{gy.get('grade', 0):.0%}"
+        grade_pct = okf.grade_token(gy)
 
         if passed:
             head = (f'<div style="display:flex;align-items:flex-end;'

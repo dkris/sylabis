@@ -253,9 +253,13 @@ def knowledge(home_dir: Path) -> list[dict]:
             if not cp_path.exists():
                 continue
             cp = yaml.safe_load(cp_path.read_text()) or {}
+            claim_doc = cdir / "portfolio" / "claims" / f"{m['id']}.md"
             row = {"course": cdir.name, "course_title": title,
                    "milestone_id": m["id"], "grade": g.get("grade"),
-                   "graded_at": g.get("graded_at"), "origin": origin}
+                   "graded_at": g.get("graded_at"), "origin": origin,
+                   # An unscored pass advances the course but mints no scored
+                   # claim doc — consumers must not link to a file never written.
+                   "has_claim": claim_doc.exists()}
             if m["id"] in pre and hashlib.sha256(
                     gpath.read_bytes()).hexdigest() == pre[m["id"]]:
                 row["preexisting"] = True
@@ -306,8 +310,10 @@ def emit_map(home_dir: Path) -> Path | None:
         lines.append("Nothing verified yet — pass a milestone to start the map.")
     for e in know:
         refs = ", ".join(
-            f"[{ev['course_title']} · {ev['milestone_id']}]"
-            f"({COURSES_SUBDIR}/{ev['course']}/portfolio/claims/{ev['milestone_id']}.md)"
+            (f"[{ev['course_title']} · {ev['milestone_id']}]"
+             f"({COURSES_SUBDIR}/{ev['course']}/portfolio/claims/{ev['milestone_id']}.md)"
+             if ev.get("has_claim")
+             else f"{ev['course_title']} · {ev['milestone_id']} (unscored)")
             for ev in e["evidence"])
         lines.append(f"- **{e['concept']}** — {refs}")
 

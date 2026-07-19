@@ -226,8 +226,18 @@ def _milestone_status(course_dir: Path, milestone_id: str) -> str:
         return "not started"
     g = yaml.safe_load(gpath.read_text()) or {}
     if g.get("passed"):
-        return f"passed ({g.get('grade', 0):.0%})"
+        return f"passed ({grade_token(g)})"
     return f"attempt {g.get('attempt', 1)} — not yet"
+
+
+def grade_token(g: dict) -> str:
+    """Display a grade.yaml's score: the percent, or 'unscored' when the
+    grade was withheld (a rubric-less executable/hybrid checkpoint — WS4.3).
+    A withheld grade omits the 'grade' key, so never fabricate a 0%."""
+    grade = g.get("grade")
+    if isinstance(grade, (int, float)):
+        return f"{grade:.0%}"
+    return "unscored"
 
 
 def _sidequest_states(course_dir: Path) -> list[dict]:

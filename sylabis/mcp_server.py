@@ -21,6 +21,8 @@ import yaml
 from . import __version__
 from . import events
 from . import journey
+from . import okf
+from .errors import SylabisError
 from .llm import LLM
 from .tools import JourneyTools, ToolError
 
@@ -251,7 +253,7 @@ class MCPServer:
             else:
                 g = yaml.safe_load(gpath.read_text()) or {}
                 verdict = "passed" if g.get("passed") else "not yet"
-                status = (f"{verdict} — grade {g.get('grade', 0):.0%}, "
+                status = (f"{verdict} — grade {okf.grade_token(g)}, "
                           f"attempt {g.get('attempt', 1)}")
             lines.append(f"{m['id']}: {status}")
         return "\n".join(lines)
@@ -299,7 +301,7 @@ class MCPServer:
         out_dir = Path(args["out_dir"])
         try:
             compile_course(args["topic"], profile, out_dir, self._llm())
-        except SystemExit as e:  # declined topic or self-test failure
+        except SylabisError as e:  # declined topic or self-test failure
             raise _ToolError(str(e))
         return (out_dir / "index.md").read_text()
 
