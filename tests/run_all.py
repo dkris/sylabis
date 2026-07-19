@@ -757,7 +757,19 @@ def test_verify_disabled_never_touches_network():
 # --------------------------------------------------------------------- runner
 
 TESTS = [v for k, v in sorted(globals().items())
-         if k.startswith(("case_", "test_")) and callable(v)]
+         if k.startswith(("case_", "test_")) and callable(v)
+         and getattr(v, "__module__", __name__) == __name__]
+
+# Auto-collect from sibling tests/test_*.py modules so workstreams add
+# suites as new files instead of all editing this one. Same conventions:
+# top-level case_*/test_* functions, optional (tmp: Path) arg.
+import importlib  # noqa: E402
+
+for _stem in sorted(p.stem for p in Path(__file__).parent.glob("test_*.py")):
+    _mod = importlib.import_module(f"tests.{_stem}")
+    TESTS.extend(v for k, v in sorted(vars(_mod).items())
+                 if k.startswith(("case_", "test_")) and callable(v)
+                 and getattr(v, "__module__", None) == _mod.__name__)
 
 
 def main() -> int:
