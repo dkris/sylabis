@@ -1,0 +1,56 @@
+# Tag-triggered PyPI release (Primetime plan, Phase 1 WS2.2). Uses PyPI
+# trusted publishing (OIDC) — no long-lived API token anywhere. Setup:
+# on PyPI, add a "trusted publisher" for this repo with workflow name
+# release.yml and environment name pypi; on GitHub, create the `pypi`
+# environment. The version guard keeps the tag, sylabis.__version__,
+# and the built distribution in lockstep.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tag must match sylabis.__version__
+        run: |
+          python - <<'EOF'
+          import os, sys
+          sys.path.insert(0, ".")
+          from sylabis import __version__
+          tag = os.environ["GITHUB_REF_NAME"]
+          if tag != f"v{__version__}":
+              raise SystemExit(
+                  f"tag {tag} does not match sylabis.__version__ "
+                  f"({__version__}); bump sylabis/__init__.py first")
+          EOF
+      - name: Run the suite
+        run: pip install -e . && python -m tests.run_all
+      - name: Build sdist + wheel
+        run: pip install build && python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # trusted publishing — OIDC, no token
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

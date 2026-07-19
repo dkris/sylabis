@@ -1,63 +1,156 @@
 """
 Compiler pipeline: intake -> harvest -> sequence -> emit -> self-test.
 Output is a course directory matching the course-template schema.
+
+WS1a: every stage is checkpointed under <course_dir>/.compile/ so a
+crashed compile resumes from the last completed stage instead of
+re-buying earlier model calls. SHARED CONTRACT (the web surface polls
+this for real progress): .compile/ holds one <stage>.json per completed
+stage plus status.json:
+
+    {"schema": 1, "stages": [<ordered stage names>], "done": [<completed>],
+     "current": <stage-name or null>, "error": <string or null>}
+
+status.json is updated at every stage boundary; on a successful compile
+current is null and done lists every stage.
 """
+import hashlib
+import json
 import time
 from pathlib import Path
 
 import yaml
 
+from . import __version__
 from . import events
 from . import okf
-from .llm import LLM, parse_json
+from .errors import CompileDeclined, CompileError
+from .llm import LLM, stage_model
 from . import prompts
 from .verify import verify_sources
+
+# Ordered stage skeleton; lesson_<id> stages are inserted before "emit"
+# once sequencing has named the milestones.
+_BASE_STAGES = ["intake", "harvest", "sequence", "emit", "self_test"]
+
+
+def profile_hash(profile: dict) -> str:
+    """Stable hash of the learner block. Events record this, never the
+    raw profile — a bundle must be publishable without leaking the
+    learner's hardware/hours/priors (WS3b.3, at-source fix)."""
+    canonical = json.dumps(profile, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class _Checkpoint:
+    """Owns <course_dir>/.compile/ per the shared contract above."""
+
+    def __init__(self, course_dir: Path):
+        self.dir = Path(course_dir) / ".compile"
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.status_path = self.dir / "status.json"
+        if self.status_path.exists():
+            self.status = json.loads(self.status_path.read_text())
+        else:
+            self.status = {"schema": 1, "stages": [], "done": [],
+                           "current": None, "error": None}
+            self._write()
+
+    def _write(self) -> None:
+        self.status_path.write_text(json.dumps(self.status, indent=2))
+
+    def set_stages(self, stages: list[str]) -> None:
+        self.status["stages"] = list(stages)
+        self._write()
+
+    def is_done(self, stage: str) -> bool:
+        return stage in self.status["done"]
+
+    def is_complete(self) -> bool:
+        stages = self.status["stages"]
+        return bool(stages) and all(s in self.status["done"] for s in stages)
+
+    def load(self, stage: str):
+        return json.loads((self.dir / f"{stage}.json").read_text())
+
+    def run(self, stage: str, fn):
+        """Run one stage exactly once: a completed stage returns its
+        saved output without calling fn (so re-runs never repeat paid
+        model calls); a failure records the error in status.json and
+        re-raises."""
+        if self.is_done(stage):
+            return self.load(stage)
+        if stage not in self.status["stages"]:
+            self.status["stages"].append(stage)
+        self.status["current"] = stage
+        self.status["error"] = None
+        self._write()
+        try:
+            result = fn()
+        except BaseException as e:
+            if not self.status["error"]:  # innermost failure wins
+                self.status["error"] = f"{stage}: {e}"
+            self._write()
+            raise
+        (self.dir / f"{stage}.json").write_text(json.dumps(result))
+        self.status["done"].append(stage)
+        self.status["current"] = None
+        self._write()
+        return result
 
 
 def compile_course(topic: str, profile: dict, out_dir: Path, llm: LLM) -> Path:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    events.emit(out_dir, "compile.requested",
-                {"topic": topic, "profile": profile})
+    ck = _Checkpoint(out_dir)
+    if ck.is_complete():
+        print(f"Course already compiled: {out_dir}")
+        return out_dir
+    fresh = not ck.status["done"]
+    if not ck.status["stages"]:
+        ck.set_stages(_BASE_STAGES)
+    if fresh:
+        events.emit(out_dir, "compile.requested",
+                    {"topic": topic,
+                     "learner_profile_hash": profile_hash(profile)})
 
-    # Stage 1 — Intake (includes viability check)
-    print("[1/5] Intake + viability...")
-    spec = parse_json(llm.call("intake", prompts.INTAKE_SYSTEM,
-                               f"Topic: {topic}\nLearner profile: {profile}"))
-    if spec["viability"]["verdict"] == "decline":
-        raise SystemExit(f"Declined: {spec['viability']['notes']}")
-    print(f"      domain={spec['domain']} "
-          f"checkable={spec['viability']['verifiable_skeleton_pct']}% "
-          f"grader={spec['viability']['grader_mode']}")
+    prev_usage_dir = getattr(llm, "usage_dir", None)
+    llm.usage_dir = out_dir  # per-stage token/cost events -> events.jsonl
+    try:
+        # Stage 1 — Intake (includes viability check)
+        print("[1/5] Intake + viability...")
+        spec = ck.run("intake", lambda: _intake(topic, profile, llm))
+        print(f"      domain={spec['domain']} "
+              f"checkable={spec['viability']['verifiable_skeleton_pct']}% "
+              f"grader={spec['viability']['grader_mode']}")
 
-    # Stage 2 — Harvest (+ locator verification; flags, never blocks)
-    print("[2/5] Source harvest...")
-    harvest = parse_json(llm.call("harvest", prompts.HARVEST_SYSTEM,
-                                  f"Compilation spec: {spec}"))
-    vsum = verify_sources(harvest["sources"], enabled=not llm.mock)
-    print(f"      {len(harvest['sources'])} sources — "
-          f"{vsum['verified']} verified, {vsum['unverified']} unverified, "
-          f"{vsum['flagged_search']} flagged search, "
-          f"{vsum['skipped']} unchecked")
+        # Stage 2 — Harvest (+ locator verification; flags, never blocks)
+        print("[2/5] Source harvest...")
+        harvest = ck.run("harvest", lambda: _harvest(spec, llm))
+        print(f"      {len(harvest['sources'])} sources")
 
-    # Stage 3 — Sequence
-    print("[3/5] Sequencing...")
-    seq = parse_json(llm.call("sequence", prompts.SEQUENCE_SYSTEM,
-                              f"Spec: {spec}\nSources: {harvest}"))
-    _check_dag(seq["milestones"])
-    print(f"      {len(seq['milestones'])} milestones, "
-          f"{len(seq.get('sidequests', []))} sidequests")
+        # Stage 3 — Sequence
+        print("[3/5] Sequencing...")
+        seq = ck.run("sequence", lambda: _sequence(spec, harvest, llm))
+        _check_dag(seq["milestones"])
+        print(f"      {len(seq['milestones'])} milestones, "
+              f"{len(seq.get('sidequests', []))} sidequests")
 
-    # Stage 4 — Emit
-    print("[4/5] Emitting course repo...")
-    _emit_repo(out_dir, topic, spec, harvest, seq, llm)
+        # Now the full stage list is known — lesson stages before emit.
+        lesson_stages = [f"lesson_{m['id']}" for m in seq["milestones"]]
+        ck.set_stages(["intake", "harvest", "sequence",
+                       *lesson_stages, "emit", "self_test"])
 
-    # Stage 5 — Self-test (structural)
-    print("[5/5] Self-test...")
-    problems = self_test(out_dir)
-    if problems:
-        raise SystemExit(f"Self-test FAILED — course not shipped:\n" +
-                         "\n".join(f"  - {p}" for p in problems))
+        # Stage 4 — Emit (per-lesson model calls checkpoint individually)
+        print("[4/5] Emitting course repo...")
+        ck.run("emit", lambda: _emit_repo(out_dir, topic, spec, harvest,
+                                          seq, llm, ck) or {"ok": True})
+
+        # Stage 5 — Self-test (structural)
+        print("[5/5] Self-test...")
+        ck.run("self_test", lambda: _self_test_stage(out_dir))
+    finally:
+        llm.usage_dir = prev_usage_dir
 
     events.emit(out_dir, "compile.completed", {
         "milestone_count": len(seq["milestones"]),
@@ -67,6 +160,39 @@ def compile_course(topic: str, profile: dict, out_dir: Path, llm: LLM) -> Path:
     })
     print(f"\nCourse compiled: {out_dir}")
     return out_dir
+
+
+def _intake(topic: str, profile: dict, llm: LLM) -> dict:
+    spec = llm.call_json("intake", prompts.INTAKE_SYSTEM,
+                         f"Topic: {topic}\nLearner profile: {profile}")
+    if spec["viability"]["verdict"] == "decline":
+        notes = spec["viability"].get("notes", "")
+        raise CompileDeclined(f"Declined: {notes}",
+                              verdict="decline", notes=notes)
+    return spec
+
+
+def _harvest(spec: dict, llm: LLM) -> dict:
+    harvest = llm.call_json("harvest", prompts.HARVEST_SYSTEM,
+                            f"Compilation spec: {spec}")
+    vsum = verify_sources(harvest["sources"], enabled=not llm.mock)
+    print(f"      {vsum['verified']} verified, {vsum['unverified']} unverified, "
+          f"{vsum['flagged_search']} flagged search, "
+          f"{vsum['skipped']} unchecked")
+    return harvest
+
+
+def _sequence(spec: dict, harvest: dict, llm: LLM) -> dict:
+    return llm.call_json("sequence", prompts.SEQUENCE_SYSTEM,
+                         f"Spec: {spec}\nSources: {harvest}")
+
+
+def _self_test_stage(course_dir: Path) -> dict:
+    problems = self_test(course_dir)
+    if problems:
+        raise CompileError("Self-test FAILED — course not shipped:\n" +
+                           "\n".join(f"  - {p}" for p in problems))
+    return {"problems": []}
 
 
 def compile_remedial(course_dir: Path, parent_id: str, concept: str,
@@ -143,22 +269,35 @@ def _check_dag(milestones: list) -> None:
     for m in milestones:  # milestones arrive in order; deps must precede
         for dep in m.get("depends_on", []):
             if dep not in ids:
-                raise SystemExit(f"Sequencing error: {m['id']} depends on unknown {dep}")
+                raise CompileError(
+                    f"Sequencing error: {m['id']} depends on unknown {dep}")
             if dep not in seen:
-                raise SystemExit(f"Sequencing error: {m['id']} depends on later milestone {dep}")
+                raise CompileError(
+                    f"Sequencing error: {m['id']} depends on later milestone {dep}")
         seen.add(m["id"])
 
 
+def _provenance() -> dict:
+    """Per-stage {model, prompt_version, sylabis_version} stamps for
+    course.yaml meta — a shared bundle must be traceable to what
+    produced it (registry prerequisite, WS3)."""
+    return {family: {"model": stage_model(family),
+                     "prompt_version": prompts.prompt_version(family),
+                     "sylabis_version": __version__}
+            for family in ("intake", "harvest", "sequence", "lesson")}
+
+
 def _emit_repo(out: Path, topic: str, spec: dict, harvest: dict,
-               seq: dict, llm: LLM) -> None:
+               seq: dict, llm: LLM, ck: _Checkpoint) -> None:
     grader_mode = spec["viability"]["grader_mode"]
 
     # course.yaml
     manifest = {
         "meta": {"title": spec["topic"], "domain": spec["domain"],
-                 "version": "0.1.0",
+                 "version": __version__,
                  "compiled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                 "topic_prompt": topic},
+                 "topic_prompt": topic,
+                 "provenance": _provenance()},
         "learner": spec.get("constraints", {}) | {
             "prior_knowledge": spec.get("assumed_knowledge", []),
             "target_artifact": spec["target_artifact"]},
@@ -181,9 +320,14 @@ def _emit_repo(out: Path, topic: str, spec: dict, harvest: dict,
 
         m_sources = [s for s in harvest["sources"] if s["id"] in m["source_ids"]]
         fm_block = okf.milestone_frontmatter(m, course_title)
-        lesson = llm.call(f"lesson_{m['id']}", prompts.LESSON_SYSTEM,
-                          f"Spec: {spec}\nMilestone: {m}\nSources: {m_sources}\n"
-                          f"OKF frontmatter block (prepend verbatim):\n{fm_block}")
+        # The lesson model call is the expensive part — checkpoint it per
+        # milestone so a crash at lesson 7 of 9 resumes at lesson 7.
+        lesson = ck.run(
+            f"lesson_{m['id']}",
+            lambda m=m, m_sources=m_sources, fm_block=fm_block: llm.call(
+                f"lesson_{m['id']}", prompts.LESSON_SYSTEM,
+                f"Spec: {spec}\nMilestone: {m}\nSources: {m_sources}\n"
+                f"OKF frontmatter block (prepend verbatim):\n{fm_block}"))
         # okf normalizes the frontmatter on receipt, so a model that
         # reformats the echoed block cannot break conformance.
         okf.emit_milestone_doc(out, m, course_title, lesson)

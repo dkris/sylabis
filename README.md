@@ -11,14 +11,33 @@ The learner's whole job is to learn. The agent does the rest.
 
 ## Install
 
+The fast path is [uv](https://docs.astral.sh/uv/) — it brings its own
+Python, so this works on a machine with nothing preinstalled:
+
 ```
-curl -fsSL https://raw.githubusercontent.com/dkris/sylabis/main/install.sh | sh
+uv tool install sylabis        # installs `sy` on your PATH
+uvx sylabis --version          # or run it without installing anything
 ```
 
-That gives you `sy`, the agent, on your PATH (an isolated install under
-`~/.local/share/sylabis` — no system Python touched; Python 3.10+ must be
-installed). Re-run the same line to upgrade; add `-s -- --uninstall` to
-remove. `sylabis` is installed too as the long-form alias.
+[pipx](https://pipx.pypa.io/) works identically if that's your tool:
+
+```
+pipx install sylabis
+```
+
+No uv or pipx? The installer script creates an isolated venv under
+`~/.local/share/sylabis` (no system Python touched; Python 3.10+
+required). It is pinned to a release tag — never a moving branch — so
+what you run is what you can audit:
+
+```
+curl -fsSL https://raw.githubusercontent.com/dkris/sylabis/v0.2.0/install.sh | sh
+```
+
+Re-run with a newer tag to upgrade; add `-s -- --uninstall` to remove.
+Every method installs both `sy` and the long-form `sylabis` alias.
+A Homebrew tap and a Docker image are explicitly deferred until the
+project has the traction to maintain them well.
 
 ```
 export ANTHROPIC_API_KEY=sk-ant-...    # or put it in .env
@@ -26,7 +45,17 @@ sy                                     # talk mode — the agent drives the whol
 ```
 
 Developing on sylabis itself? `pip install -e .` in a virtualenv gives
-you the same `sy` command from your checkout.
+you the same `sy` command from your checkout. The optional full-screen
+terminal app installs with the extra: `pip install "sylabis[tui]"`.
+
+**No telemetry. Ever. By default and by design.** sylabis is built on
+the thesis that your learning record belongs to you; nothing about you,
+your journey, or your usage ever leaves your machine. The only network
+traffic is the model API you configure, source-locator verification
+during compiles, and a once-daily cached check of PyPI for a newer
+version — a plain GET with no identifiers, which prints a one-line
+notice and never self-updates. Disable even that with
+`SYLABIS_NO_UPDATE_CHECK=1` (or the standard `DO_NOT_TRACK=1`).
 
 ## The surface
 
@@ -97,12 +126,16 @@ python -m sylabis.cli serve ~/path/course    # one bundle (legacy scope)
 
 Journey scope serves the same nine tools the interactive agent uses —
 `journey`, `start_course`, `get_lesson`, `submit_work`, `knowledge_map`,
-… — so Claude Desktop can run the entire loop across every course:
+… — so Claude Desktop can run the entire loop across every course. The
+`sylabis-mcp` entry point makes the config the conventional one-liner:
 
 ```json
 {"mcpServers": {"sylabis": {
-  "command": "python", "args": ["-m", "sylabis.cli", "serve"]}}}
+  "command": "uvx", "args": ["--from", "sylabis", "sylabis-mcp"]}}}
 ```
+
+(From a checkout, `python -m sylabis.cli serve` does the same thing;
+`serve --mock` runs the whole surface offline against fixtures.)
 
 ## GitHub as interface
 
@@ -216,3 +249,22 @@ Design decisions that are deliberate, not shortcuts:
 - Attached courses are clones/links; nothing pulls them automatically —
   `git pull` in the course directory refreshes one.
 - Single-user, local only. That is the point of a prototype.
+
+## License
+
+The sylabis **core is [AGPL-3.0-only](LICENSE)**. It's a real OSI
+open-source license — anyone can read, run, modify, and redistribute
+sylabis, which the learner-owned-credential thesis requires — and its
+network clause means anyone who offers sylabis as a hosted service must
+share their changes back.
+
+**Content is licensed separately from code** (decision D4): learning
+paths you publish to the community registry default to
+**[CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/)** — free to
+share and adapt with attribution, which is what keeps authorship
+visible as paths get forked and improved. The `license` field on a
+published path is mandatory and machine-readable; authors who want a
+different grant (including a public-domain `CC0-1.0` dedication) set it
+explicitly. Your own journey — courses, artifacts, grades, the
+knowledge map — is yours, lives only on your machine, and is never
+licensed to anyone unless you publish it.

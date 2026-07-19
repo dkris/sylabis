@@ -26,7 +26,14 @@ class CompileError(SylabisError):
 
 
 class CompileDeclined(CompileError):
-    """Intake's viability verdict declined to compile the course."""
+    """Intake's viability verdict declined to compile the course.
+    Carries the verdict and the intake stage's notes so surfaces can
+    render the reason without parsing the message string."""
+
+    def __init__(self, message: str, verdict: str = "decline", notes: str = ""):
+        super().__init__(message)
+        self.verdict = verdict
+        self.notes = notes
 
 
 class GradeError(SylabisError):

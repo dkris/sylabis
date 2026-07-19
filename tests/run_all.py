@@ -250,23 +250,25 @@ def test_rubric_script_score_out_of_range(tmp):
 # ------------------------------------------------------------- compiler seams
 
 def test_intake_decline_refuses_to_compile(tmp):
+    from sylabis.errors import CompileDeclined
     intake = json.loads((FIX / "intake.json").read_text())
     intake["viability"]["verdict"] = "decline"
     intake["viability"]["notes"] = "under 20% verifiable"
     fdir = make_fixtures(tmp, {"intake": intake})
     try:
         compile_mock(tmp, fdir)
-    except SystemExit as e:
+    except CompileDeclined as e:
         assert "Declined" in str(e)
     else:
         raise AssertionError("decline verdict must stop the compile")
 
 
 def test_check_dag_rejects_forward_dependency():
+    from sylabis.errors import CompileError
     ms = [{"id": "a", "depends_on": ["b"]}, {"id": "b", "depends_on": []}]
     try:
         _check_dag(ms)
-    except SystemExit as e:
+    except CompileError as e:
         assert "later milestone" in str(e)
     else:
         raise AssertionError("forward dep must fail loudly")
@@ -648,16 +650,19 @@ def test_web_first_run_compiles(tmp):
     POST /learn compiles a course into the journey."""
     import http.client
     import threading
+    import time
     from sylabis.web import make_server
 
     home = _journey_home(tmp)
     server = make_server(home, port=0, mock=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port = server.server_address[1]
+    token = server.app.token  # documented test hook
 
     def req(method, path, body=None):
         conn = http.client.HTTPConnection("127.0.0.1", port)
-        conn.request(method, path, body=body,
+        sep = "&" if "?" in path else "?"
+        conn.request(method, f"{path}{sep}token={token}", body=body,
                      headers={"Content-Type": "application/json"}
                      if body else {})
         resp = conn.getresponse()
@@ -668,7 +673,18 @@ def test_web_first_run_compiles(tmp):
         assert status == 200 and "What do you want to" in page
         status, out = req("POST", "/learn",
                           json.dumps({"topic": "Survey synthesis"}))
-        assert status == 200 and json.loads(out) == {"ok": True}
+        job = json.loads(out)
+        assert status == 200 and job["ok"] and job["job"], \
+            "learn must enqueue a background compile and return a job id"
+        deadline, state = time.time() + 30, None
+        while time.time() < deadline:
+            status, out = req("GET", f"/status/{job['job']}")
+            assert status == 200
+            state = json.loads(out)["state"]
+            if state in ("done", "error"):
+                break
+            time.sleep(0.05)
+        assert state == "done", f"compile job ended state={state!r}"
         assert journey.course_dirs(home), "compile must land in the journey"
         status, out = req("POST", "/learn", json.dumps({"topic": "  "}))
         assert status == 400, "an empty topic is refused, not compiled"
@@ -691,11 +707,14 @@ def test_web_serves_the_loop(tmp):
     server = make_server(home, port=0, mock=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port = server.server_address[1]
+    token = server.app.token  # documented test hook
 
     def req(method, path, body=None, ctype="application/x-www-form-urlencoded"):
         conn = http.client.HTTPConnection("127.0.0.1", port)
         headers = {"Content-Type": ctype} if body else {}
-        conn.request(method, path, body=body, headers=headers)
+        sep = "&" if "?" in path else "?"
+        conn.request(method, f"{path}{sep}token={token}", body=body,
+                     headers=headers)
         resp = conn.getresponse()
         return resp.status, resp.read().decode()
 
@@ -711,7 +730,8 @@ def test_web_serves_the_loop(tmp):
         status, page = req("POST", "/course/survey/submit/00-data-audit",
                            urlencode({"artifact": STRONG_ARTIFACT,
                                       "reflection": STRONG_REFLECTION,
-                                      "hours": "2"}))
+                                      "hours": "2",
+                                      "csrf": server.app.csrf}))
         assert status == 200 and "Passed" in page
 
         status, page = req("GET", "/knowledge")

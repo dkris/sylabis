@@ -18,6 +18,7 @@ from pathlib import Path
 
 import yaml
 
+from . import __version__
 from . import events
 from . import journey
 from .llm import LLM
@@ -25,6 +26,8 @@ from .tools import JourneyTools, ToolError
 
 PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 LATEST_PROTOCOL = "2025-11-25"
+# Protocol versions are YYYY-MM-DD date strings per the MCP spec.
+_PROTOCOL_RE = re.compile(r"\d{4}-\d{2}-\d{2}$")
 
 # Surfaced as an isError:true result so the model can self-correct rather
 # than a JSON-RPC error that aborts the call.
@@ -33,6 +36,10 @@ _ToolError = ToolError
 
 class _UnknownTool(Exception):
     """Tool name is not one we expose — a client mistake, not a tool failure."""
+
+
+class _InvalidParams(Exception):
+    """Request params are malformed (JSON-RPC -32602)."""
 
 
 class _MethodNotFound(Exception):
@@ -84,7 +91,7 @@ class MCPServer:
             result = self._dispatch(method, params)
         except _MethodNotFound:
             return self._error(mid, -32601, f"Method not found: {method}")
-        except _UnknownTool as e:
+        except (_UnknownTool, _InvalidParams) as e:
             return self._error(mid, -32602, str(e))
         except Exception as e:
             return self._error(mid, -32603, f"Internal error: {e}")
@@ -107,12 +114,27 @@ class MCPServer:
         raise _MethodNotFound()
 
     def _initialize(self, params: dict) -> dict:
+        # Version negotiation, narrowed (WS2): a version we support is
+        # echoed per-spec; a well-formed version we do NOT support gets
+        # our latest (also per-spec — the client decides whether to
+        # disconnect) but is flagged loudly on stderr instead of being
+        # answered silently; anything malformed or missing is rejected.
         requested = params.get("protocolVersion")
-        version = requested if requested in PROTOCOL_VERSIONS else LATEST_PROTOCOL
+        if not isinstance(requested, str) or not _PROTOCOL_RE.match(requested):
+            raise _InvalidParams(
+                f"Invalid or missing protocolVersion: {requested!r} "
+                f"(expected a YYYY-MM-DD version string)")
+        if requested in PROTOCOL_VERSIONS:
+            version = requested
+        else:
+            self._log(f"client requested unsupported protocolVersion "
+                      f"{requested!r}; offering {LATEST_PROTOCOL} "
+                      f"(supported: {', '.join(PROTOCOL_VERSIONS)})")
+            version = LATEST_PROTOCOL
         return {
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "sylabis", "version": "0.1.0"},
+            "serverInfo": {"name": "sylabis", "version": __version__},
         }
 
     def _call_tool(self, params: dict) -> dict:

@@ -26,7 +26,11 @@ def emit(course_dir: Path, event_type: str, payload: dict) -> None:
 
 
 # Event types (the future graph edges):
-#   compile.requested   {topic, domain, learner_profile_hash}
+#   compile.requested   {topic, learner_profile_hash}
+#                       (hash only — NEVER the raw learner profile)
+#   llm.usage           {stage, model, input_tokens, output_tokens,
+#                        cost_usd, retries}
+#                       (per-stage cost log; zeroed tokens in mock mode)
 #   compile.completed   {milestone_count, viability_pct, grader_mode,
 #                        okf_conformant}
 #   milestone.started   {milestone_id}          (emitted by MCP get_lesson)

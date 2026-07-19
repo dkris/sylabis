@@ -1,7 +1,30 @@
 """
 Pipeline stage prompts. These ARE the compiler — the Python around
 them is plumbing. Version these like code, because they are code.
+
+PROMPT_VERSIONS is the machine-readable version of the per-prompt
+comment headers below. Bump the entry whenever you change its prompt —
+the compiler stamps {model, prompt_version, sylabis_version} per stage
+into course.yaml meta (WS1a.6), and the grader wave stamps the same
+shape into grade.yaml. Keys are stage FAMILIES (see llm.stage_family):
+"lesson_00-intro" resolves to "lesson".
 """
+
+PROMPT_VERSIONS = {
+    "guide": "1",
+    "intake": "1",
+    "harvest": "2",
+    "sequence": "1",
+    "lesson": "2",
+    "audit": "1",
+    "tier3": "1",
+    "explain": "1",
+}
+
+
+def prompt_version(stage: str) -> str:
+    """Version for a stage name or family; 'unversioned' when unknown."""
+    return PROMPT_VERSIONS.get(stage.split("_", 1)[0], "unversioned")
 
 # v1 (2026-07-11): the agent harness persona. The tools do the mechanics;
 # this prompt only sets how the guide behaves between them.

@@ -1,7 +1,7 @@
 #!/bin/sh
 # sylabis installer — sets up the `sy` learning agent.
 #
-#   curl -fsSL https://raw.githubusercontent.com/dkris/sylabis/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/dkris/sylabis/v0.2.0/install.sh | sh
 #
 # What it does:
 #   1. Finds a Python 3.10+ interpreter.
@@ -11,16 +11,19 @@
 #   4. Links `sy` and `sylabis` into ~/.local/bin (override with $SYLABIS_BIN_DIR)
 #      and makes sure that directory is on your PATH.
 #
-# Re-run the same command any time to upgrade. Uninstall with:
-#   curl -fsSL https://raw.githubusercontent.com/dkris/sylabis/main/install.sh | sh -s -- --uninstall
+# Re-run the same command (with a newer tag) to upgrade. Uninstall with:
+#   curl -fsSL https://raw.githubusercontent.com/dkris/sylabis/v0.2.0/install.sh | sh -s -- --uninstall
 
 set -eu
 
 REPO_URL="${SYLABIS_REPO:-https://github.com/dkris/sylabis}"
-REF="${SYLABIS_REF:-main}"
+# Pinned to a release tag, never a moving branch: a curl|sh that installs
+# whatever `main` currently contains is unauditable. Override with
+# SYLABIS_REF only if you know exactly what you are installing.
+REF="${SYLABIS_REF:-v0.2.0}"
 # Anything pip understands: a URL, a local path, a VCS spec. Defaults to the
 # GitHub tarball of $REF so the installer needs curl-ish networking but not git.
-SOURCE="${SYLABIS_SOURCE:-${REPO_URL}/archive/${REF}.tar.gz}"
+SOURCE="${SYLABIS_SOURCE:-${REPO_URL}/archive/refs/tags/${REF}.tar.gz}"
 
 DATA_DIR="${SYLABIS_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/sylabis}"
 VENV_DIR="$DATA_DIR/venv"
@@ -128,7 +131,7 @@ fi
 step "Installing sylabis from ${SOURCE}"
 if ! "$VENV_DIR/bin/pip" install --quiet --upgrade "$SOURCE"; then
     fail "pip install failed. Re-run without '| sh' to see full output:
-    curl -fsSL https://raw.githubusercontent.com/dkris/sylabis/main/install.sh -o install.sh && sh install.sh"
+    curl -fsSL https://raw.githubusercontent.com/dkris/sylabis/${REF}/install.sh -o install.sh && sh install.sh"
 fi
 
 for name in sy sylabis; do

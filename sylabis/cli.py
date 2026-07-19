@@ -24,17 +24,37 @@ from pathlib import Path
 
 import yaml
 
-from . import journey
+from . import __version__, journey
 from .compiler import compile_course
+from .errors import SylabisError
 from .grader import grade as run_grade
 from .llm import LLM
 from .path_engine import decide, actuate
 
 
-def main():
+def main(argv: list[str] | None = None):
+    """Entry point for `sy`/`sylabis`: parse, dispatch, and turn any
+    deliberate library error (SylabisError) into a clean one-line
+    message and exit code 1 — never a traceback."""
+    try:
+        _main(argv)
+    except SylabisError as e:
+        sys.exit(f"sylabis: {e}")
+
+
+def mcp_main():
+    """Entry point for `sylabis-mcp`: the MCP stdio server, so client
+    configs can say {"command": "uvx", "args": ["--from", "sylabis",
+    "sylabis-mcp"]}. Forwards its own args to `serve`."""
+    main(["serve", *sys.argv[1:]])
+
+
+def _main(argv: list[str] | None = None):
     p = argparse.ArgumentParser(
         prog=os.path.basename(sys.argv[0] or "") or "sy",
         description="The learning agent. Run with no arguments to talk.")
+    p.add_argument("--version", action="version",
+                   version=f"sylabis {__version__}")
     sub = p.add_subparsers(dest="cmd")
 
     def home_flag(sp):
@@ -79,6 +99,8 @@ def main():
     s = sub.add_parser("serve", help="MCP stdio server (journey-wide "
                                      "without a course dir)")
     s.add_argument("course_dir", nargs="?", default=None)
+    s.add_argument("--mock", action="store_true",
+                   help="serve fixture model responses (offline testing)")
     home_flag(s)
 
     # ---- plumbing: kept for scripts and the bundled grade workflow ----
@@ -98,14 +120,28 @@ def main():
                    help="skip exemplar-calibrated Tier 3 scoring")
     g.add_argument("--mock", action="store_true")
 
-    args = p.parse_args()
+    args = p.parse_args(argv)
+
+    # Courtesy update notice: interactive commands only. Never for
+    # `serve` (stdout is MCP protocol) and never in --mock runs; the
+    # module itself additionally honors SYLABIS_NO_UPDATE_CHECK /
+    # DO_NOT_TRACK / CI and only speaks to an interactive terminal.
+    if args.cmd != "serve" and not getattr(args, "mock", False):
+        from . import update_check
+        update_check.maybe_notify(journey.home(getattr(args, "home", None)))
 
     if args.cmd is None:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             sys.exit("sylabis talks through Claude: set ANTHROPIC_API_KEY "
                      "(or put it in .env), then run `sylabis` again.")
-        from .agent import Agent  # lazy: the SDK client only for talking
-        Agent(journey.home()).run()
+        from .tui import tui_available, run_tui  # lazy: textual is optional
+        if (tui_available() and sys.stdout.isatty() and sys.stdin.isatty()
+                and os.environ.get("TERM") != "dumb"
+                and not os.environ.get("SYLABIS_NO_TUI")):
+            run_tui(journey.home())
+        else:
+            from .agent import Agent  # lazy: the SDK client only for talking
+            Agent(journey.home()).run()
 
     elif args.cmd == "learn":
         home = journey.home(args.home)
@@ -169,7 +205,7 @@ def main():
     elif args.cmd == "serve":
         from .mcp_server import MCPServer  # lazy: stdio server pulls no deps
         MCPServer(Path(args.course_dir) if args.course_dir else None,
-                  home_dir=args.home).run()
+                  mock=args.mock, home_dir=args.home).run()
 
     elif args.cmd == "compile":
         profile = {"weekly_hours": args.hours, "hardware": args.hardware,
