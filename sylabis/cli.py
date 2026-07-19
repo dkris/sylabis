@@ -18,6 +18,7 @@ work is on disk. `compile` and `grade` remain as plumbing for scripts
 and the bundled GitHub workflow.
 """
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -87,6 +88,10 @@ def _main(argv: list[str] | None = None):
     home_flag(su)
 
     j = sub.add_parser("journey", help="progress + the knowledge map")
+    j.add_argument("--publish", metavar="DIR", default=None,
+                   help="emit a scrubbed public journey page (knowledge.md "
+                        "+ index.html) into DIR — concepts and grades only, "
+                        "never artifact or reflection text")
     home_flag(j)
 
     w = sub.add_parser("web", help="the journey in your browser")
@@ -109,7 +114,32 @@ def _main(argv: list[str] | None = None):
                      help="author handle recorded in the publish manifest")
     pub.add_argument("--license", default="CC-BY-4.0",
                      help="SPDX license id (mandatory; default CC-BY-4.0)")
+    pub.add_argument("--list", action="store_true",
+                     help="after publishing, print a ready-to-paste registry "
+                          "listing entry plus the manual listing-PR steps")
     home_flag(pub)
+
+    pa = sub.add_parser("paths", help="the community registry of published "
+                                      "paths (cloning is free and anonymous)")
+    pa_sub = pa.add_subparsers(dest="paths_cmd", required=True)
+
+    def registry_flag(sp):
+        sp.add_argument("--registry", default=None,
+                        help="registry index URL or path (default "
+                             "$SYLABIS_REGISTRY_URL or the public index)")
+
+    ps = pa_sub.add_parser("search", help="search the registry index")
+    ps.add_argument("query", nargs="?", default="",
+                    help="matched against listing name/topic/tags "
+                         "(empty lists everything)")
+    registry_flag(ps)
+    home_flag(ps)
+
+    pg = pa_sub.add_parser("get", help="attach a listed path at its "
+                                       "pinned commit")
+    pg.add_argument("id", help="listing id, e.g. author/some-path")
+    registry_flag(pg)
+    home_flag(pg)
 
     s = sub.add_parser("serve", help="MCP stdio server (journey-wide "
                                      "without a course dir)")
@@ -193,6 +223,12 @@ def _main(argv: list[str] | None = None):
 
     elif args.cmd == "journey":
         home = journey.home(args.home)
+        if args.publish:
+            dest = journey.publish_page(home, Path(args.publish))
+            print(f"Journey page published: {dest}")
+            print("Scrubbed: concepts and grades only — no artifact or "
+                  "reflection text, no learner profile, no local paths.")
+            return
         steps = journey.next_steps(home)
         if not steps:
             print('Nothing here yet. Start with: sylabis learn "a topic"')
@@ -228,6 +264,27 @@ def _main(argv: list[str] | None = None):
         out = publish_course(src, Path(args.dest), author=args.author,
                              license=args.license)
         print(f"Published template: {out}")
+        if args.list:
+            _print_listing_entry(src, out)
+
+    elif args.cmd == "paths":
+        from . import registry  # lazy: only the registry commands need it
+        home = journey.home(args.home)
+        if args.paths_cmd == "search":
+            hits = registry.search(home, args.query, url=args.registry)
+            if not hits:
+                print("No matching paths. Publish one: sylabis publish "
+                      "<course> --to <dir> --list")
+                return
+            for e in hits:
+                _print_listing(e)
+        else:  # get
+            dest = registry.get(home, args.id, url=args.registry)
+            journey.emit_map(home)
+            info = journey.attach_info(dest) or {}
+            print(f"Attached {dest.name!r} at pinned commit "
+                  f"{(info.get('commit') or '?')[:12]}.")
+            _print_step(journey.course_next(dest))
 
     elif args.cmd == "serve":
         from .mcp_server import MCPServer  # lazy: stdio server pulls no deps
@@ -261,6 +318,57 @@ def _print_step(step: dict, base: Path | None = None) -> None:
         print(f"{label}: {step['milestone_id']} — {step['title']} "
               f"(~{step['estimated_hours']}h)")
         print(f"  Read: {base / step['milestone_id'] / 'LESSON.md'}")
+
+
+def _print_listing(e: dict) -> None:
+    """One registry search hit, human-readable."""
+    hours = e.get("est_hours")
+    bits = [f"~{hours}h" if hours else None,
+            e.get("license"), f"by {e.get('author', '?')}"]
+    print(f"{e.get('id', '?')} — {e.get('name', '?')} "
+          f"({', '.join(b for b in bits if b)})")
+    if e.get("topic"):
+        print(f"  topic: {e['topic']}")
+    tags = e.get("assumed_knowledge") or []
+    if tags:
+        print(f"  assumes: {', '.join(str(t) for t in tags)}")
+    verified = e.get("verified") or {}
+    if verified.get("verified_at"):
+        print(f"  verified: {verified['verified_at']} "
+              f"(sylabis {verified.get('sylabis_version', '?')})")
+    if e.get("derived_from"):
+        print(f"  derived from: {e['derived_from']}")
+    print(f"  get it: sylabis paths get {e.get('id', '?')}")
+
+
+def _print_listing_entry(src: Path, template: Path) -> None:
+    """`sy publish --list`: the ready-to-paste paths.json entry plus the
+    manual listing-PR steps. Computing the pinned commit_sha is the
+    author's step (it exists only after the push); nothing here shells
+    out to gh or the network."""
+    from . import registry
+    info = journey.attach_info(src)
+    entry = registry.listing_entry(
+        template, derived_from=(info or {}).get("source"))
+    slug = journey.slugify(entry["name"])
+    print("\nRegistry listing entry (paste into paths.json):\n")
+    print(json.dumps(entry, indent=2))
+    print(f"""
+To list this path (all manual — no gh needed):
+  1. Create a public repo named {registry.REPO_PREFIX}{slug} and push
+     the template:
+       cd {template}
+       git init && git add -A && git commit -m "publish {entry['name']}"
+       git remote add origin <your repo url> && git push -u origin main
+  2. Pin the commit:  git rev-parse HEAD
+     and put the 40-char sha in "commit_sha" above.
+  3. Fork the sylabis-registry repo, add the entry to paths.json, and
+     open a pull request. Registry CI re-verifies the bundle at the
+     pinned sha and sets the "verified" badge fields when green.
+
+Listing unlocks your public journey page, the verified badge,
+attribution (derived_from), and ranking — cloning stays free and
+anonymous for everyone.""")
 
 
 def _submit(args) -> None:

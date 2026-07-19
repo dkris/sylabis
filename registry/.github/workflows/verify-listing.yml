@@ -1,0 +1,69 @@
+# Registry CI — the quality gate for listing PRs (sylabis WS3c).
+#
+# TEMPLATE NOTE: this workflow ships inside the main sylabis repo under
+# registry/ as scaffolding for the separate sylabis-registry repository;
+# it only runs once copied there. For each entry changed by the PR it
+# clones the bundle at the PINNED sha, installs sylabis, and runs the
+# full gate (self-test, OKF conformance + hashes, PII scan, secret
+# scan, source-locator verification). Green CI writes the `verified`
+# badge fields back to the PR branch — structural review needs no
+# human; license/name sanity stays a 30-second human merge.
+#
+# The weekly cron re-verifies EVERY entry so badges stay fresh; a
+# broken bundle surfaces as a failed scheduled run to triage.
+name: verify-listing
+
+on:
+  pull_request:
+    paths: ["paths.json"]
+  schedule:
+    - cron: "17 6 * * 1"   # weekly badge-freshness re-verification
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # For PRs, check out the PR branch itself so the verified
+          # fields can be committed back to it.
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install sylabis
+        run: pip install "${{ vars.SYLABIS_GIT_URL || 'git+https://github.com/dhruvakrishnan/sylabis' }}"
+
+      - name: Fetch baseline index
+        if: github.event_name == 'pull_request'
+        run: git fetch --quiet origin "${{ github.event.pull_request.base.ref }}"
+
+      - name: Verify changed entries (all entries on schedule/dispatch)
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            python scripts/verify_listing.py --write \
+              --base "origin/${{ github.event.pull_request.base.ref }}"
+          else
+            python scripts/verify_listing.py --write
+          fi
+
+      - name: Commit verified badge fields
+        if: github.event_name == 'pull_request'
+        run: |
+          git config user.name "sylabis-registry-ci"
+          git config user.email "registry-ci@users.noreply.github.com"
+          git add paths.json
+          git commit -m "ci: set verified badge fields" || echo "nothing to commit"
+          git push
