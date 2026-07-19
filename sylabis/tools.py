@@ -12,6 +12,8 @@ import yaml
 
 from . import events
 from . import journey
+from . import okf
+from .errors import SylabisError
 from .llm import LLM
 
 
@@ -99,7 +101,9 @@ class JourneyTools:
         out_dir = journey.new_course_dir(self.home, topic)
         try:
             compile_course(topic, profile, out_dir, self._llm())
-        except SystemExit as e:  # declined topic or self-test failure
+        except (SystemExit, SylabisError) as e:
+            # declined topic, self-test failure, model/schema error —
+            # a recoverable tool result, never a dead harness
             raise ToolError(str(e))
         journey.emit_map(self.home)
         return (f"Course compiled into {out_dir.name!r}.\n\n"
@@ -130,7 +134,7 @@ class JourneyTools:
         return text
 
     def _t_submit_work(self, args: dict) -> str:
-        from .grader import grade
+        from .grader import grade, path_engine_view
         from .path_engine import decide, actuate
 
         cdir = self._course_dir(args["course"])
@@ -143,13 +147,21 @@ class JourneyTools:
         (m_dir / "reflection.md").write_text(args["reflection"])
 
         llm = self._llm()
-        result = grade(cdir, mid, llm, hours_actual=args.get("hours_actual"))
+        try:
+            result = grade(cdir, mid, llm,
+                           hours_actual=args.get("hours_actual"))
+        except SylabisError as e:
+            # Typed grading failures — including ConsentRequired, which
+            # carries the attached bundle's rubric-script list — become
+            # a recoverable tool result on this non-interactive surface,
+            # never a hang or a crash. Nothing was executed.
+            raise ToolError(str(e))
         manifest = yaml.safe_load((cdir / "course.yaml").read_text())
         milestone = next((m for m in manifest["milestones"]
                           if m["id"] == mid), None)
         if milestone is None:
             raise ToolError(f"{mid!r} graded but absent from course.yaml.")
-        decisions = decide(cdir, milestone, result)
+        decisions = decide(cdir, milestone, path_engine_view(result))
         actions = actuate(cdir, decisions, llm=llm)
         journey.emit_map(self.home)
 
@@ -168,8 +180,11 @@ class JourneyTools:
             return "Nothing verified yet — pass a milestone to start the map."
         lines = []
         for e in know:
-            refs = "; ".join(f"{ev['course']}/{ev['milestone_id']} "
-                             f"({ev['grade']:.0%})" for ev in e["evidence"])
+            refs = "; ".join(
+                f"{ev['course']}/{ev['milestone_id']} "
+                + (f"({ev['grade']:.0%})" if ev.get("grade") is not None
+                   else "(unscored)")
+                for ev in e["evidence"])
             lines.append(f"- {e['concept']} — {refs}")
         return "\n".join(lines)
 
@@ -184,7 +199,7 @@ class JourneyTools:
             else:
                 g = yaml.safe_load(gpath.read_text()) or {}
                 verdict = "passed" if g.get("passed") else "not yet"
-                status = (f"{verdict} — grade {g.get('grade', 0):.0%}, "
+                status = (f"{verdict} — grade {okf.grade_token(g)}, "
                           f"attempt {g.get('attempt', 1)}")
             lines.append(f"{m['id']}: {status}")
         return "\n".join(lines)

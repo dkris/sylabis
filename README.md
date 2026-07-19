@@ -11,14 +11,33 @@ The learner's whole job is to learn. The agent does the rest.
 
 ## Install
 
+The fast path is [uv](https://docs.astral.sh/uv/) — it brings its own
+Python, so this works on a machine with nothing preinstalled:
+
 ```
-curl -fsSL https://raw.githubusercontent.com/dkris/sylabis/main/install.sh | sh
+uv tool install sylabis        # installs `sy` on your PATH
+uvx sylabis --version          # or run it without installing anything
 ```
 
-That gives you `sy`, the agent, on your PATH (an isolated install under
-`~/.local/share/sylabis` — no system Python touched; Python 3.10+ must be
-installed). Re-run the same line to upgrade; add `-s -- --uninstall` to
-remove. `sylabis` is installed too as the long-form alias.
+[pipx](https://pipx.pypa.io/) works identically if that's your tool:
+
+```
+pipx install sylabis
+```
+
+No uv or pipx? The installer script creates an isolated venv under
+`~/.local/share/sylabis` (no system Python touched; Python 3.10+
+required). It is pinned to a release tag — never a moving branch — so
+what you run is what you can audit:
+
+```
+curl -fsSL https://raw.githubusercontent.com/dkris/sylabis/v0.2.0/install.sh | sh
+```
+
+Re-run with a newer tag to upgrade; add `-s -- --uninstall` to remove.
+Every method installs both `sy` and the long-form `sylabis` alias.
+A Homebrew tap and a Docker image are explicitly deferred until the
+project has the traction to maintain them well.
 
 ```
 export ANTHROPIC_API_KEY=sk-ant-...    # or put it in .env
@@ -26,7 +45,17 @@ sy                                     # talk mode — the agent drives the whol
 ```
 
 Developing on sylabis itself? `pip install -e .` in a virtualenv gives
-you the same `sy` command from your checkout.
+you the same `sy` command from your checkout. The optional full-screen
+terminal app installs with the extra: `pip install "sylabis[tui]"`.
+
+**No telemetry. Ever. By default and by design.** sylabis is built on
+the thesis that your learning record belongs to you; nothing about you,
+your journey, or your usage ever leaves your machine. The only network
+traffic is the model API you configure, source-locator verification
+during compiles, and a once-daily cached check of PyPI for a newer
+version — a plain GET with no identifiers, which prints a one-line
+notice and never self-updates. Disable even that with
+`SYLABIS_NO_UPDATE_CHECK=1` (or the standard `DO_NOT_TRACK=1`).
 
 ## The surface
 
@@ -38,6 +67,8 @@ sy next                 # what to do now, across every course
 sy submit               # grade the work sitting in your journey
 sy journey              # progress + the knowledge map
 sy attach SOURCE        # connect a course from another repo or path
+sy publish COURSE --to DIR   # scrub a course into a shareable template
+sy paths search QUERY   # find community paths; `sy paths get ID` attaches one
 ```
 
 No paths, no milestone ids, no flags required. Your journey lives in
@@ -53,7 +84,13 @@ warm paper, Didot over Georgia with mono labels — where you start a
 course from the page itself, read lessons, submit work, and get the
 grade told tier by tier; Sy waits behind an **Ask Sy** tab and slides in
 as a right dock only when called. Plain HTML, no JS framework, no build
-step; the one webfont degrades to Georgia offline.
+step. `sy web` prints a one-time tokenized URL
+(`http://127.0.0.1:8787/?token=…`) and opens it for you — the token is
+the session's key, traded for a cookie, so no other web page can drive
+your journey; set `SYLABIS_NO_BROWSER=1` to print the URL without
+opening a browser. Compiles run in the background and the page shows
+real stage-by-stage progress, straight from the compiler's own
+checkpoint files.
 
 The terminal is a real agent CLI, not a readline loop: replies stream in
 as they generate, every tool call renders as a trace line with a result
@@ -85,8 +122,33 @@ concepts ringed where courses meet.
 
 Courses don't have to live in the journey to join it. `sy attach`
 connects content from anywhere — a git URL clones the bundle in, a local
-path symlinks it — and its verified knowledge counts like any other's,
-so curricula connect across repositories, not just within one directory.
+path **copies** it (never a symlink: grading writes into the attached
+bundle and must never touch the original checkout) — and records
+provenance: the source, the pinned commit, and fingerprints of any
+grades that arrived with the bundle, which never count toward your
+knowledge until you do the work yourself. Its verified knowledge then
+counts like any other's, so curricula connect across repositories, not
+just within one directory.
+
+## Sharing
+
+Your journey is yours; the *course* is worth sharing. `sy publish`
+scrubs a course into a clean template — an allowlist transform, never a
+copy: your learner profile, activity log, artifacts, reflections, and
+grades are structurally excluded, and an automated gate (self-test +
+secret scan + PII audit) refuses the publish if anything survives. Every
+published path carries a mandatory machine-readable license (default
+CC-BY-4.0) and ships source *locators*, never harvested source text. The
+full mechanics are in the [publishing guide](docs/publishing-guide.md).
+
+Published paths list on a serverless community registry — a static index
+over author-hosted git repos, pinned by commit SHA, with CI as the
+quality gate. `sy paths search` finds them; `sy paths get` attaches one
+at its pinned SHA. **Cloning is free and anonymous, forever.**
+Reciprocity is status, not access: publishing is what unlocks your
+public journey page (`sy journey --publish` — your knowledge map,
+rendered), the verified badge on your listings, and the attribution
+chain when others build on your paths.
 
 ## Claude as interface (MCP)
 
@@ -97,12 +159,16 @@ python -m sylabis.cli serve ~/path/course    # one bundle (legacy scope)
 
 Journey scope serves the same nine tools the interactive agent uses —
 `journey`, `start_course`, `get_lesson`, `submit_work`, `knowledge_map`,
-… — so Claude Desktop can run the entire loop across every course:
+… — so Claude Desktop can run the entire loop across every course. The
+`sylabis-mcp` entry point makes the config the conventional one-liner:
 
 ```json
 {"mcpServers": {"sylabis": {
-  "command": "python", "args": ["-m", "sylabis.cli", "serve"]}}}
+  "command": "uvx", "args": ["--from", "sylabis", "sylabis-mcp"]}}}
 ```
+
+(From a checkout, `python -m sylabis.cli serve` does the same thing;
+`serve --mock` runs the whole surface offline against fixtures.)
 
 ## GitHub as interface
 
@@ -185,8 +251,14 @@ sylabis/
 ├── grader.py       T1 structural → T2 claim audit → T3 rubric → explain-back caps
 ├── path_engine.py  decide(): legible rules table · actuate(): unlocks + remedials
 ├── events.py       append-only JSONL — the pathway graph seed
+├── errors.py       typed SylabisError hierarchy — library code never SystemExits
+├── sandbox.py      rubric-script containment: bwrap/nsjail, env scrub, consent
+├── publish.py      sy publish — the allowlist scrubber + secret/PII gate
+├── registry.py     paths.json registry client: sy paths search/get
+├── tui.py          optional Textual view over the same agent loop ([tui] extra)
+├── update_check.py once-daily cached PyPI version notice (no telemetry)
 ├── mcp_server.py   MCP stdio server: journey scope or per-course scope
-└── cli.py          talk | web | learn | next | submit | journey | attach | serve
+└── cli.py          talk | web | learn | next | submit | journey | attach | publish | serve
 ```
 
 Design decisions that are deliberate, not shortcuts:
@@ -205,14 +277,57 @@ Design decisions that are deliberate, not shortcuts:
 - Dead-source checks flag and continue — verification never blocks a compile.
 - events.jsonl is written from day one so the pathway graph exists in three years.
 
+## Security
+
+Strangers' bundles run strangers' code, so grading is contained: rubric
+scripts execute under bwrap/nsjail when available (no network, read-only
+rootfs, resource limits) and *always* with a scrubbed environment — your
+API key is never in a rubric script's world. The first grade of an
+attached bundle that declares scripts asks for your consent once,
+naming the scripts and the bundle's origin. The web app uses
+Jupyter-style token auth with Host/Origin/CSRF checks, and `sy publish`
+refuses to ship anything that looks like your learner state or a
+secret. The full mapping of protections to threats — and the residual
+risks, stated honestly — is in the [threat model](docs/threat-model.md).
+
 ## Known gaps (honest list)
 
-- Tier 3 exemplar sets are unseeded (4–6 h human task per course before enabling).
+- Tier 3 exemplar sets are unseeded (4–6 h human task per course before
+  enabling); until then three-tier grades fall back to the claim-audit
+  pass ratio, and executable checkpoints without scripts are recorded
+  `unscored` rather than given a fabricated number.
 - `starter/run_benchmark.py` is a scaffold the learner fills in; the grader
   runs it but ships no reference implementation per milestone yet.
 - The knowledge map connects courses by verified concepts; it does not yet
   suggest what to learn next from the graph (collect first, infer later).
-- The web app is local and single-learner: no auth, bind to 127.0.0.1 only.
-- Attached courses are clones/links; nothing pulls them automatically —
+- Bundle integrity is tamper-*evident*, not tamper-proof: `okf.yaml`
+  hashes every doc, but nothing is cryptographically signed until
+  Phase-2 identity — whoever can edit a doc can regenerate the manifest.
+- If neither bwrap nor nsjail works on your machine (or you pass
+  `--unsandboxed`), rubric scripts run with only the scrubbed
+  environment between you and the bundle author; the warning names the
+  bundle's origin, but it is a warning, not a wall.
+- The community registry is not yet launched and will start self-seeded;
+  an empty registry is a dead registry, so the first paths are ours.
+- Attached courses are clones/copies; nothing pulls them automatically —
   `git pull` in the course directory refreshes one.
 - Single-user, local only. That is the point of a prototype.
+
+## License
+
+The sylabis **core is [AGPL-3.0-only](LICENSE)**. It's a real OSI
+open-source license — anyone can read, run, modify, and redistribute
+sylabis, which the learner-owned-credential thesis requires — and its
+network clause means anyone who offers sylabis as a hosted service must
+share their changes back.
+
+**Content is licensed separately from code** (decision D4): learning
+paths you publish to the community registry default to
+**[CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/)** — free to
+share and adapt with attribution, which is what keeps authorship
+visible as paths get forked and improved. The `license` field on a
+published path is mandatory and machine-readable; authors who want a
+different grant (including a public-domain `CC0-1.0` dedication) set it
+explicitly. Your own journey — courses, artifacts, grades, the
+knowledge map — is yours, lives only on your machine, and is never
+licensed to anyone unless you publish it.

@@ -1,7 +1,37 @@
 """
 Pipeline stage prompts. These ARE the compiler — the Python around
 them is plumbing. Version these like code, because they are code.
+
+PROMPT_VERSIONS is the machine-readable version of the per-prompt
+comment headers below. Bump the entry whenever you change its prompt —
+the compiler stamps {model, prompt_version, sylabis_version} per stage
+into course.yaml meta (WS1a.6), and the grader wave stamps the same
+shape into grade.yaml. Keys are stage FAMILIES (see llm.stage_family):
+"lesson_00-intro" resolves to "lesson".
+
+WS4.1: every JSON-emitting stage also carries a JSON Schema in
+STAGE_OUTPUT_SCHEMAS (bottom of this file). llm.call() sends it to the
+API as a structured-outputs constraint (output_config.format), so on
+live calls a schema violation is impossible by construction. The
+prompt + schema pair IS the stage — change one, review the other, and
+bump the PROMPT_VERSIONS entry for either change.
 """
+
+PROMPT_VERSIONS = {
+    "guide": "1",
+    "intake": "1",
+    "harvest": "2",
+    "sequence": "1",
+    "lesson": "2",
+    "audit": "1",
+    "tier3": "1",
+    "explain": "1",
+}
+
+
+def prompt_version(stage: str) -> str:
+    """Version for a stage name or family; 'unversioned' when unknown."""
+    return PROMPT_VERSIONS.get(stage.split("_", 1)[0], "unversioned")
 
 # v1 (2026-07-11): the agent harness persona. The tools do the mechanics;
 # this prompt only sets how the guide behaves between them.
@@ -160,3 +190,231 @@ Output ONLY JSON:
              "followup_question": "the question you would ask next"}],
  "grade_cap": null | 0.7}
 Set grade_cap to 0.7 if any core concept shows a misconception."""
+
+
+# ------------------------------------------------------------- JSON schemas
+# WS4.1 structured outputs. One JSON Schema per JSON-emitting stage family,
+# living next to its prompt because the pair is the stage. llm.call()
+# requests these via the API's output_config.format mechanism; llm.py's
+# STAGE_SCHEMAS required-keys check stays as the belt-and-suspenders
+# fallback that mock mode and the one-round repair loop validate against.
+# Raw-markdown stages (lesson) and the conversational guide have no entry.
+
+_CLAIM_FLAGS = ["overclaiming", "underpowered", "missing_n",
+                "false_precision", "unsupported_causal", "percentage_of_what"]
+
+INTAKE_SCHEMA = {
+    "type": "object",
+    "required": ["topic", "domain", "target_artifact", "assumed_knowledge",
+                 "constraints", "viability"],
+    "additionalProperties": False,
+    "properties": {
+        "topic": {"type": "string"},
+        "domain": {"enum": ["technical", "non-technical", "hybrid"]},
+        "target_artifact": {"type": "string"},
+        "assumed_knowledge": {"type": "array", "items": {"type": "string"}},
+        "constraints": {"type": "object"},
+        "viability": {
+            "type": "object",
+            "required": ["verifiable_skeleton_pct", "grader_mode",
+                         "verdict", "notes"],
+            "additionalProperties": False,
+            "properties": {
+                "verifiable_skeleton_pct": {"type": "number",
+                                            "minimum": 0, "maximum": 100},
+                "grader_mode": {"enum": ["executable", "three_tier",
+                                         "hybrid"]},
+                "verdict": {"enum": ["proceed", "decline"]},
+                "notes": {"type": "string"},
+            },
+        },
+    },
+}
+
+HARVEST_SCHEMA = {
+    "type": "object",
+    "required": ["sources"],
+    "additionalProperties": False,
+    "properties": {
+        "sources": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["id", "title", "author", "year", "type",
+                             "locator", "authority", "what_learner_needs",
+                             "okf_description", "freshness_class"],
+                "additionalProperties": False,
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "author": {"type": "string"},
+                    "year": {"type": "integer"},
+                    "type": {"enum": ["paper", "docs", "book", "guide",
+                                      "counter_example"]},
+                    "locator": {"type": "string"},
+                    "authority": {"type": "number",
+                                  "minimum": 0, "maximum": 1},
+                    "what_learner_needs": {"type": "string"},
+                    "okf_description": {"type": "string", "maxLength": 120},
+                    "freshness_class": {"enum": ["fast", "medium", "stable",
+                                                 "evergreen"]},
+                },
+            },
+        },
+    },
+}
+
+SEQUENCE_SCHEMA = {
+    "type": "object",
+    "required": ["milestones", "sidequests"],
+    "additionalProperties": False,
+    "properties": {
+        "milestones": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["id", "title", "estimated_hours",
+                             "artifact_type", "artifact_spec", "source_ids",
+                             "core_concepts", "misconception_target",
+                             "depends_on"],
+                "additionalProperties": False,
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "estimated_hours": {"type": "number", "minimum": 0},
+                    "artifact_type": {"type": "string"},
+                    "artifact_spec": {"type": "string"},
+                    "source_ids": {"type": "array",
+                                   "items": {"type": "string"}},
+                    "core_concepts": {"type": "array",
+                                      "items": {"type": "string"}},
+                    "misconception_target": {"type": "string"},
+                    "depends_on": {"type": "array",
+                                   "items": {"type": "string"}},
+                },
+            },
+        },
+        "sidequests": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["id", "type", "parent", "title", "hook"],
+                "additionalProperties": False,
+                "properties": {
+                    "id": {"type": "string"},
+                    "type": {"enum": ["depth", "frontier"]},
+                    "parent": {"type": "string"},
+                    "title": {"type": "string"},
+                    "hook": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+CLAIM_AUDIT_SCHEMA = {
+    "type": "object",
+    "required": ["claims", "summary"],
+    "additionalProperties": False,
+    "properties": {
+        "claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["text", "type", "evidence", "result", "flag",
+                             "feedback"],
+                "additionalProperties": False,
+                "properties": {
+                    "text": {"type": "string"},
+                    "type": {"enum": ["descriptive", "comparative", "causal",
+                                      "predictive", "evaluative"]},
+                    "evidence": {"type": "string"},
+                    "result": {"enum": ["pass", "fail"]},
+                    "flag": {"anyOf": [{"type": "null"},
+                                       {"enum": _CLAIM_FLAGS}]},
+                    "feedback": {"type": "string"},
+                },
+            },
+        },
+        "summary": {
+            "type": "object",
+            "required": ["total", "passed", "failed", "flags", "blocking"],
+            "additionalProperties": False,
+            "properties": {
+                "total": {"type": "integer"},
+                "passed": {"type": "integer"},
+                "failed": {"type": "integer"},
+                "flags": {"type": "array", "items": {"type": "string"}},
+                "blocking": {"type": "boolean"},
+            },
+        },
+    },
+}
+
+TIER3_RUBRIC_SCHEMA = {
+    "type": "object",
+    "required": ["dimensions", "overall", "feedback"],
+    "additionalProperties": False,
+    "properties": {
+        "dimensions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["name", "score", "nearest_exemplar",
+                             "rationale"],
+                "additionalProperties": False,
+                "properties": {
+                    "name": {"type": "string"},
+                    "score": {"type": "number", "minimum": 0, "maximum": 1},
+                    "nearest_exemplar": {"enum": ["strong", "adequate",
+                                                  "weak"]},
+                    "rationale": {"type": "string"},
+                },
+            },
+        },
+        "overall": {"type": "number", "minimum": 0, "maximum": 1},
+        "feedback": {"type": "string"},
+    },
+}
+
+EXPLAIN_BACK_SCHEMA = {
+    "type": "object",
+    "required": ["probes", "grade_cap"],
+    "additionalProperties": False,
+    "properties": {
+        "probes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["concept", "verdict", "evidence",
+                             "followup_question"],
+                "additionalProperties": False,
+                "properties": {
+                    "concept": {"type": "string"},
+                    "verdict": {"enum": ["understood", "surface",
+                                         "misconception"]},
+                    "evidence": {"type": "string"},
+                    "followup_question": {"type": "string"},
+                },
+            },
+        },
+        "grade_cap": {"anyOf": [{"type": "null"},
+                                {"type": "number",
+                                 "minimum": 0, "maximum": 1}]},
+    },
+}
+
+STAGE_OUTPUT_SCHEMAS = {
+    "intake": INTAKE_SCHEMA,
+    "harvest": HARVEST_SCHEMA,
+    "sequence": SEQUENCE_SCHEMA,
+    "audit": CLAIM_AUDIT_SCHEMA,
+    "tier3": TIER3_RUBRIC_SCHEMA,
+    "explain": EXPLAIN_BACK_SCHEMA,
+}
+
+
+def stage_output_schema(stage: str) -> dict | None:
+    """JSON Schema for a stage name or family; None for raw-markdown
+    stages ('lesson_00-x' resolves through its family, like versions)."""
+    return STAGE_OUTPUT_SCHEMAS.get(stage.split("_", 1)[0])

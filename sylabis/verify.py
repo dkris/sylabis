@@ -9,16 +9,26 @@ carry a 15s crawl-delay for bots, while one API query covers every arXiv
 source in a compile. DOIs are confirmed by the doi.org redirect status
 alone — following to the publisher invites bot-blocks that say nothing
 about the DOI itself.
+
+WS4.2: per-URL checks run concurrently under a bounded pool
+(MAX_CONCURRENCY) instead of the old serial 0.5s-sleep loop — the bound
+is the politeness mechanism, and the sources of one compile spread
+across many hosts anyway. verify_sources() also takes an optional
+`cache` dict keyed by raw locator so re-compiles/resumes never re-hit a
+host for a locator already checked (transient network errors are NOT
+cached — a resume should re-check those), and an optional `transport`
+(httpx transport) so tests exercise the real concurrent path with zero
+network.
 """
 import os
 import re
-import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
 TIMEOUT = 12.0
-POLITE_DELAY = 0.5  # seconds between per-URL checks
+MAX_CONCURRENCY = 8  # bounded pool for per-URL checks
 ARXIV_API = "https://export.arxiv.org/api/query"
 _ATOM = "{http://www.w3.org/2005/Atom}"
 
@@ -104,15 +114,26 @@ def _check_url(client: httpx.Client, url: str, kind: str) -> tuple[bool, str]:
     return False, f"http_{r.status_code}"
 
 
-def verify_sources(sources: list[dict], enabled: bool = True) -> dict:
+def verify_sources(sources: list[dict], enabled: bool = True,
+                   cache: dict | None = None,
+                   transport=None) -> dict:
     """Annotate each source in place:
       verified:      True | False | None (None = not checkable / skipped)
       verification:  short reason string
-    Returns a count summary for logging."""
+    Returns a count summary for logging.
+
+    Flags-and-continues by contract: verification NEVER blocks a compile
+    (the compiler's consolidation step decides what to do with the flags).
+    `cache` maps raw locator -> {verified, verification, locator_kind};
+    hits skip the network, fresh non-network-error results are written
+    back. `transport` is handed to httpx.Client (tests inject a
+    MockTransport to drive the real concurrent path offline)."""
     summary = {"verified": 0, "unverified": 0, "flagged_search": 0,
                "skipped": 0}
     arxiv_batch: dict[str, list[dict]] = {}
     url_checks: list[tuple[dict, str, str]] = []
+    checked: list[dict] = []   # cache hits — already annotated
+    fresh: list[dict] = []     # network-checked this call
 
     for s in sources:
         target, kind = resolve_locator(s.get("locator", ""))
@@ -121,28 +142,51 @@ def verify_sources(sources: list[dict], enabled: bool = True) -> dict:
             s["verified"] = False
             s["verification"] = "search_locator_model_unsure"
             summary["flagged_search"] += 1
-        elif kind == "opaque" or not enabled:
+            continue
+        if kind == "opaque" or not enabled:
             s["verified"] = None
             s["verification"] = ("locator_not_checkable" if kind == "opaque"
                                  else "check_skipped")
             summary["skipped"] += 1
+            continue
+        hit = (cache or {}).get(s["locator"])
+        if hit is not None:
+            s["verified"] = hit["verified"]
+            s["verification"] = hit["verification"]
+            checked.append(s)
         elif kind == "arxiv":
             arxiv_batch.setdefault(target, []).append(s)
         else:
             url_checks.append((s, target, kind))
 
     if arxiv_batch or url_checks:
-        with httpx.Client(timeout=TIMEOUT,
+        with httpx.Client(timeout=TIMEOUT, transport=transport,
                           headers={"User-Agent": _user_agent()}) as client:
-            if arxiv_batch:
-                _check_arxiv_batch(client, arxiv_batch)
-            for s, url, kind in url_checks:
-                ok, reason = _check_url(client, url, kind)
-                s["verified"] = ok
-                s["verification"] = reason
-                time.sleep(POLITE_DELAY)
-        for group in (list(arxiv_batch.values()), [[s] for s, _, _ in url_checks]):
-            for srcs in group:
-                for s in srcs:
-                    summary["verified" if s["verified"] else "unverified"] += 1
+            with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as pool:
+                futures = []
+                if arxiv_batch:  # one batched query, one worker
+                    futures.append(pool.submit(
+                        _check_arxiv_batch, client, arxiv_batch))
+
+                def _one(s=None, url=None, kind=None):
+                    ok, reason = _check_url(client, url, kind)
+                    s["verified"] = ok
+                    s["verification"] = reason
+
+                for s, url, kind in url_checks:
+                    futures.append(pool.submit(_one, s, url, kind))
+                for f in futures:
+                    f.result()  # flags-and-continues: workers never raise
+        for srcs in arxiv_batch.values():
+            fresh.extend(srcs)
+        fresh.extend(s for s, _, _ in url_checks)
+
+    if cache is not None:
+        for s in fresh:
+            if not str(s.get("verification", "")).startswith("network_error"):
+                cache[s["locator"]] = {"verified": s["verified"],
+                                       "verification": s["verification"],
+                                       "locator_kind": s["locator_kind"]}
+    for s in checked + fresh:
+        summary["verified" if s["verified"] else "unverified"] += 1
     return summary

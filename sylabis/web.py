@@ -9,15 +9,30 @@ Reading comes first; the agent stays quiet until asked.
 It is the third harness over the same journey tools the terminal agent
 and the MCP server use, so every interface has exactly the same powers.
 Deliberately dependency-free: stdlib http.server, hand-rolled markdown
-subset, server-rendered SVG for the map. No JS framework, no build step;
-the one webfont (GFS Didot, per the design system) degrades to Georgia
-when offline.
+subset, server-rendered SVG for the map. No JS framework, no build step,
+and no third-party requests: the display face is a system stack (Didot /
+Georgia), so a page view never beacons anyone.
+
+Security model (Jupyter's, wholesale): the server binds 127.0.0.1 and
+every route requires a per-session bearer token, printed once as a
+tokenized URL at startup and exchanged for an HttpOnly session cookie.
+The Host header must be localhost/127.0.0.1 (the DNS-rebinding defense),
+POST bodies are size-capped, POSTs are Origin-checked, and HTML forms
+carry a CSRF token. Tests authenticate via the documented hooks:
+WebApp(..., token=...) or by reading server.app.token / server.app.csrf.
 """
+import hmac
 import html
 import json
+import math
+import os
 import posixpath
 import re
+import secrets
+import shutil
+import sys
 import threading
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -25,12 +40,12 @@ from urllib.parse import parse_qs, urlparse
 import yaml
 
 from . import journey
+from . import okf
 from .tools import JourneyTools, ToolError, _safe_id
 
 # sylabis design tokens (design-system project, tokens/*.css) — editorial,
 # single-mode: ink lives on paper, color marks identity and action only.
 _CSS = """
-@import url('https://fonts.googleapis.com/css2?family=GFS+Didot&display=swap');
 :root{
 --shiro:#FFFFFF;--paper:#F9F9F7;--surface:#FCFCFB;--sumi:#1A1A1A;
 --ink-2:#52514E;--muted:#898781;--line:#E8E8E4;--line-soft:#F0F0EC;
@@ -38,7 +53,7 @@ _CSS = """
 --matcha:#2D5A30;--matcha-tint:#EDFAEE;
 --series-1:#E03D28;--series-2:#2D5A30;--series-3:#C98A2E;--series-4:#2A6F97;
 --series-5:#7A4E8C;--series-6:#B5482F;--series-7:#5C7A3F;--series-8:#C25B7C;
---font-display:'GFS Didot','Didot','Georgia',serif;
+--font-display:'Didot','Bodoni MT','Georgia',serif;
 --font-body:'Georgia','Times New Roman',serif;
 --font-mono:'Courier New','Courier',ui-monospace,Menlo,monospace;
 --radius-xs:2px;--radius-sm:4px;--radius-md:6px;
@@ -346,14 +361,66 @@ def _bridge_names(entry: dict) -> list[str]:
 
 # ------------------------------------------------------------------ app
 
+MAX_BODY = 2 * 1024 * 1024  # request-body cap: artifacts are text, not uploads
+COOKIE_NAME = "sylabis_session"
+CHAT_MESSAGE_CAP = 60   # messages per chat session before a reset is needed
+CHAT_SESSION_CAP = 32   # per-tab chat histories kept server-side
+_CHAT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}$")
+
+
 class WebApp:
-    def __init__(self, home_dir: Path, mock: bool = False):
+    """The Reading Room behind an auth wall.
+
+    Test hooks (documented, deliberate): pass ``token=`` to know the
+    bearer token up front, or read ``.token`` / ``.csrf`` off the
+    instance (``server.app``); ``.max_body`` is overridable so the
+    body-size cap can be tested with small payloads; ``.jobs`` is the
+    background-compile registry that ``/status/<job>`` reads.
+    """
+
+    def __init__(self, home_dir: Path, mock: bool = False,
+                 token: str | None = None):
         self.home = Path(home_dir)
         self.mock = mock
         self.tools = JourneyTools(self.home, mock=mock)
-        self.lock = threading.Lock()  # compiling, grading, chat: one at a time
+        # Scoped to journey-STATE mutation (grading, emit_map, claiming a
+        # new course dir) — never held across a whole compile or a model
+        # call, so the server stays responsive mid-compile.
+        self.lock = threading.Lock()
+        # --- auth: per-session bearer token -> HttpOnly session cookie
+        self.token = token or secrets.token_urlsafe(32)
+        self.csrf = secrets.token_urlsafe(32)
+        self._session = secrets.token_urlsafe(32)
+        self.max_body = MAX_BODY
+        # --- background compiles: job id -> {state, topic, course_dir, ...}
+        self.jobs: dict[str, dict] = {}
+        # --- chat: one capped history per browser tab, never one global
+        self._chat_lock = threading.Lock()
+        self._chats: dict[str, list] = {}
         self._agent = None
-        self._chat: list[dict] = []
+
+    # -------------------------------------------------------------- auth
+
+    def token_ok(self, supplied: str) -> bool:
+        return bool(supplied) and hmac.compare_digest(
+            supplied.encode(), self.token.encode())
+
+    def csrf_ok(self, supplied: str) -> bool:
+        return bool(supplied) and hmac.compare_digest(
+            supplied.encode(), self.csrf.encode())
+
+    def cookie_ok(self, header: str) -> bool:
+        for part in (header or "").split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == COOKIE_NAME and value and hmac.compare_digest(
+                    value.encode(), self._session.encode()):
+                return True
+        return False
+
+    def session_cookie(self) -> str:
+        """Set-Cookie value handed out when a request presents the token."""
+        return (f"{COOKIE_NAME}={self._session}; HttpOnly; "
+                f"SameSite=Strict; Path=/")
 
     # ------------------------------------------------------------- shell
 
@@ -385,53 +452,76 @@ class WebApp:
             foot = ""
             first = ("Sy needs ANTHROPIC_API_KEY on the server to talk. "
                      "The rest of the room works without it.")
-        return f"""
+        shell = f"""
 <button class="sy-launch" id="sylaunch" aria-expanded="false"
  aria-controls="sydock">Ask Sy</button>
 <aside class="sy-dock" id="sydock" aria-label="Sy, your guide">
   <div class="sy-head"><span class="dot"></span>
     <div><div class="name">Sy</div>
     <div class="sub">your guide · here when called</div></div>
+    <button id="syreset" aria-label="New chat" title="New chat">↺</button>
     <button id="syclose" aria-label="Close">×</button></div>
   <div class="sy-log" id="sylog" aria-live="polite">
     <div><div class="who sy">Sy</div>
     <div class="msg">{html.escape(first)}</div></div></div>
   <div class="sy-foot">{foot}</div>
-</aside>
+</aside>"""
+        # Plain string, not an f-string: JS braces stay readable. The chat
+        # id lives in sessionStorage, so each browser tab talks in its own
+        # capped session; the reset button starts that tab's chat over.
+        script = """
 <script>
 const dock=document.getElementById('sydock'),
       launch=document.getElementById('sylaunch');
-function syToggle(open){{dock.classList.toggle('open',open);
-launch.setAttribute('aria-expanded',dock.classList.contains('open'));}}
+function syToggle(open){dock.classList.toggle('open',open);
+launch.setAttribute('aria-expanded',dock.classList.contains('open'));}
 launch.addEventListener('click',()=>syToggle());
 document.getElementById('syclose').addEventListener('click',()=>syToggle(false));
+let syChat='default';
+try{
+  syChat=sessionStorage.getItem('syChat');
+  if(!syChat){
+    syChat=Math.random().toString(36).slice(2)+Date.now().toString(36);
+    sessionStorage.setItem('syChat',syChat);
+  }
+}catch(_){syChat='default'}
 const form=document.getElementById('syform');
-if(form){{
+if(form){
   const log=document.getElementById('sylog'),
         box=document.getElementById('symsg');
-  form.addEventListener('submit',async e=>{{
+  form.addEventListener('submit',async e=>{
     e.preventDefault();
     const t=box.value.trim(); if(!t)return;
     add('you','You',t); box.value=''; box.disabled=true;
-    try{{
-      const r=await fetch('/chat',{{method:'POST',
-        headers:{{'Content-Type':'application/json'}},
-        body:JSON.stringify({{message:t}})}});
+    try{
+      const r=await fetch('/chat',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({message:t,chat:syChat})});
       const d=await r.json();
       add('sy','Sy',d.reply||d.error||'(no reply)');
-    }}catch(_){{add('sy','Sy','(connection lost — is the server running?)')}}
+    }catch(_){add('sy','Sy',
+      '(the server did not answer — its terminal will say why)')}
     box.disabled=false; box.focus();
-  }});
-  function add(cls,who,text){{
+  });
+  document.getElementById('syreset').addEventListener('click',async()=>{
+    try{
+      await fetch('/chat/reset',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({chat:syChat})});
+    }catch(_){}
+    log.innerHTML=''; add('sy','Sy','(fresh chat)'); box.focus();
+  });
+  function add(cls,who,text){
     const d=document.createElement('div');
     const w=document.createElement('div');
     w.className='who '+cls; w.textContent=who;
     const m=document.createElement('div');
     m.className='msg'; m.textContent=text;
     d.append(w,m); log.appendChild(d); log.scrollTop=log.scrollHeight;
-  }}
-}}
+  }
+}
 </script>"""
+        return shell + script
 
     # ------------------------------------------------------------- pages
 
@@ -513,24 +603,7 @@ if(form){{
         points_html = "".join(
             f'<div><div class="k">{k}</div><div class="v">{v}</div></div>'
             for k, v in points)
-        stages = [
-            ("Intake", "Reading your topic. Naming the concrete artifact "
-             "you'll end with."),
-            ("Source harvest", "Finding the primary sources a course should "
-             "compile from. Verifying every locator."),
-            ("Sequencing", "Ordering milestones so theory lands at most one "
-             "step before you use it."),
-            ("Lesson writing", "Writing each lesson from its sources — "
-             "context, do-steps, artifact spec."),
-            ("Self-test", "Checking the course isn't broken before you ever "
-             "see it."),
-        ]
-        stages_html = "".join(
-            f'<div class="stage"><div class="mark">●</div><div>'
-            f'<div class="lbl">{k}</div>'
-            f'<div style="font-size:15px;color:var(--ink-2)">{v}</div>'
-            f"</div></div>" for k, v in stages)
-        return f"""
+        body = f"""
 <div id="firstrun">
 <p class="eyebrow">A new journey</p>
 <h1 class="hero-h">What do you want to <em>learn</em>?</h1>
@@ -548,44 +621,125 @@ padding:14px 16px"
 <div class="points">{points_html}</div>
 </div>
 <div id="compiling" style="display:none">
-<p class="eyebrow hot" style="animation:syPulse 1.4s infinite">Compiling ·
-about a minute</p>
+<p class="eyebrow hot" style="animation:syPulse 1.4s infinite">Compiling</p>
 <h1 id="ctopic"></h1>
-<p class="quiet">The compiler is working through these stages now — this
-page will move on by itself when the course is ready.</p>
-{stages_html}
+<p class="quiet">The compiler reports each stage as it finishes — the list
+below is its real progress, and this page moves on by itself when the
+course is ready. A refresh is safe: the compile keeps running server-side.</p>
+<div id="cstages"><div class="stage"><div class="mark">●</div><div>
+<div class="lbl">Starting</div>
+<div style="font-size:15px;color:var(--ink-2)">Handing your topic to the
+compiler…</div></div></div></div>
 <p class="quiet" id="cerror" style="color:var(--aka);margin-top:20px"></p>
-</div>
+</div>"""
+        # Plain string, not an f-string: the stage list is rendered from
+        # /status/<job>, which reads the compiler's own checkpoint file —
+        # the progress shown is real, never an animation.
+        script = """
 <script>
 const lf=document.getElementById('learnform');
-lf.addEventListener('submit',async e=>{{
+function cerr(t){document.getElementById('cerror').textContent=t;}
+function renderStages(c){
+  if(!c||!Array.isArray(c.stages)||!c.stages.length)return;
+  const done=c.done||[],box=document.getElementById('cstages');
+  box.innerHTML='';
+  for(const s of c.stages){
+    const isDone=done.includes(s),isCur=s===c.current;
+    const row=document.createElement('div');row.className='stage';
+    const mk=document.createElement('div');mk.className='mark';
+    mk.textContent=isDone?'✓':'●';
+    mk.style.color=isDone?'var(--matcha)':(isCur?'var(--aka)':'var(--line)');
+    if(!isCur)mk.style.animation='none';
+    const lbl=document.createElement('div');lbl.className='lbl';
+    lbl.style.marginBottom='0';lbl.textContent=s.replace(/_/g,' ');
+    const cell=document.createElement('div');cell.appendChild(lbl);
+    row.append(mk,cell);box.appendChild(row);
+  }
+}
+async function poll(job){
+  try{
+    const r=await fetch('/status/'+job);
+    const d=await r.json();
+    renderStages(d.compile);
+    if(d.state==='done'){location.href='/';return;}
+    if(d.state==='error'){cerr(d.error||'Compile failed.');return;}
+  }catch(_){/* transient — keep polling */}
+  setTimeout(()=>poll(job),1000);
+}
+lf.addEventListener('submit',async e=>{
   e.preventDefault();
   const topic=document.getElementById('topic').value.trim();
   if(!topic)return;
   document.getElementById('firstrun').style.display='none';
   document.getElementById('ctopic').textContent=topic;
   document.getElementById('compiling').style.display='block';
-  try{{
-    const r=await fetch('/learn',{{method:'POST',
-      headers:{{'Content-Type':'application/json'}},
-      body:JSON.stringify({{topic}})}});
+  try{
+    const r=await fetch('/learn',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({topic})});
     const d=await r.json();
-    if(d.ok){{location.href='/';return;}}
-    document.getElementById('cerror').textContent=d.error||'Compile failed.';
-  }}catch(_){{
-    document.getElementById('cerror').textContent=
-      'Lost the server mid-compile — check the terminal.';
-  }}
-}});
+    if(d.ok&&d.job){poll(d.job);return;}
+    cerr(d.error||'Compile failed.');
+  }catch(_){cerr('The server did not answer — check its terminal.');}
+});
 </script>"""
+        return body + script
 
     def learn(self, payload: dict) -> dict:
-        topic = (payload.get("topic") or "").strip()
+        """Enqueue a compile on a worker thread and return a job id the
+        page polls via /status/<job>. The request never blocks for the
+        minute a real compile takes."""
+        topic = payload.get("topic")
+        topic = topic.strip() if isinstance(topic, str) else ""
         if not topic:
             raise ToolError("Say what you want to learn first.")
-        with self.lock:
-            self.tools.call("start_course", {"topic": topic})
-        return {"ok": True}
+        if len(topic) > 500:
+            raise ToolError("Keep the topic under 500 characters.")
+        with self.lock:  # claim the course dir name atomically
+            out_dir = journey.new_course_dir(self.home, topic)
+            out_dir.mkdir(parents=True)
+        job_id = secrets.token_hex(8)
+        self.jobs[job_id] = {"state": "queued", "topic": topic,
+                             "course_dir": out_dir, "course": None,
+                             "error": None}
+        threading.Thread(target=self._compile_job,
+                         args=(job_id, topic, out_dir), daemon=True).start()
+        return {"ok": True, "job": job_id}
+
+    def _compile_job(self, job_id: str, topic: str, out_dir: Path) -> None:
+        job = self.jobs[job_id]
+        job["state"] = "running"
+        try:
+            from .compiler import compile_course
+            profile = {"weekly_hours": 5, "hardware": "",
+                       "prior_knowledge": journey.prior_knowledge(self.home)}
+            compile_course(topic, profile, out_dir, self.tools._llm())
+            with self.lock:  # journey-state mutation only
+                journey.emit_map(self.home)
+            job["course"] = out_dir.name
+            job["state"] = "done"
+        except BaseException as e:  # SystemExit / SylabisError / anything
+            if not (out_dir / "course.yaml").exists():
+                shutil.rmtree(out_dir, ignore_errors=True)
+            job["error"] = str(e) or e.__class__.__name__
+            job["state"] = "error"
+
+    def job_status(self, job_id: str) -> dict:
+        """Real progress for one compile job. The `compile` field is the
+        compiler's own <course_dir>/.compile/status.json (schema 1:
+        stages/done/current/error); it is tolerated missing — the writer
+        may not have started yet."""
+        job = self.jobs.get(job_id)
+        if job is None:
+            raise ToolError("No such compile job.")
+        compile_status = None
+        status_path = job["course_dir"] / ".compile" / "status.json"
+        try:
+            compile_status = json.loads(status_path.read_text())
+        except (OSError, ValueError):
+            pass
+        return {"ok": True, "state": job["state"], "course": job["course"],
+                "error": job["error"], "compile": compile_status}
 
     def knowledge_page(self) -> str:
         steps = journey.next_steps(self.home)
@@ -602,9 +756,12 @@ lf.addEventListener('submit',async e=>{{
             body.append("<h2>Verified concepts</h2><table>")
             for e in know:
                 refs = "<br>".join(
-                    f'<a href="/course/{ev["course"]}/doc?p=portfolio/claims/'
-                    f'{ev["milestone_id"]}.md">{html.escape(ev["course_title"])}'
-                    f' · {html.escape(ev["milestone_id"])}</a>'
+                    (f'<a href="/course/{ev["course"]}/doc?p=portfolio/claims/'
+                     f'{ev["milestone_id"]}.md">{html.escape(ev["course_title"])}'
+                     f' · {html.escape(ev["milestone_id"])}</a>'
+                     if ev.get("has_claim")
+                     else f'{html.escape(ev["course_title"])} · '
+                          f'{html.escape(ev["milestone_id"])} (unscored)')
                     for ev in e["evidence"])
                 body.append(f"<tr><td><strong>{html.escape(e['concept'])}"
                             f"</strong></td><td>{refs}</td></tr>")
@@ -634,7 +791,8 @@ lf.addEventListener('submit',async e=>{{
                 "← journey</a>",
                 f'<h1 style="margin-top:16px">'
                 f"{html.escape(manifest['meta']['title'])}</h1>"]
-        target = manifest.get("learner", {}).get("target_artifact", "")
+        target = (manifest.get("target_artifact")  # published templates
+                  or manifest.get("learner", {}).get("target_artifact", ""))
         if target:
             body.append(f'<p class="lead">{html.escape(target)}</p>')
         for m in manifest["milestones"]:
@@ -642,7 +800,7 @@ lf.addEventListener('submit',async e=>{{
             if journey.milestone_passed(cdir, m["id"]):
                 g = yaml.safe_load(gpath.read_text()) or {}
                 status = (f'<span class="tag pass">✓ passed · '
-                          f'{g.get("grade", 0):.0%}</span>')
+                          f'{okf.grade_token(g)}</span>')
             elif gpath.exists():
                 g = yaml.safe_load(gpath.read_text()) or {}
                 status = (f'<span class="tag fail">attempt '
@@ -696,6 +854,7 @@ lf.addEventListener('submit',async e=>{{
 <p class="quiet" style="font-size:14px">Your own words — the grader probes
 understanding, not polish.</p>
 <form method="post" action="/course/{name}/submit/{mid}">
+<input type="hidden" name="csrf" value="{html.escape(self.csrf, quote=True)}">
 <label for="artifact">Artifact</label>
 <textarea id="artifact" name="artifact" required
  placeholder="Paste your artifact…"></textarea>
@@ -714,16 +873,22 @@ understanding, not polish.</p>
         args = {"course": name, "milestone_id": mid,
                 "artifact": form.get("artifact", [""])[0],
                 "reflection": form.get("reflection", [""])[0]}
-        hours = form.get("hours", [""])[0]
+        hours = (form.get("hours", [""])[0] or "").strip()
         if hours:
-            args["hours_actual"] = float(hours)
-        with self.lock:
+            try:
+                h = float(hours)
+            except ValueError:
+                raise ToolError("Hours must be a number, e.g. 2 or 2.5.")
+            if not math.isfinite(h) or not 0 <= h <= 10000:
+                raise ToolError("Hours must be between 0 and 10000.")
+            args["hours_actual"] = h
+        with self.lock:  # journey-state mutation: grade, path engine, map
             feedback = self.tools.call("submit_work", args)
         cdir = self._cdir(name)
         gy = yaml.safe_load((cdir / mid / "grade.yaml").read_text()) or {}
         cp = yaml.safe_load((cdir / mid / "checkpoint.yaml").read_text()) or {}
         passed = bool(gy.get("passed"))
-        grade_pct = f"{gy.get('grade', 0):.0%}"
+        grade_pct = okf.grade_token(gy)
 
         if passed:
             head = (f'<div style="display:flex;align-items:flex-end;'
@@ -872,19 +1037,37 @@ understanding, not polish.</p>
     # -------------------------------------------------------------- chat
 
     def chat_enabled(self) -> bool:
-        import os
         return bool(os.environ.get("ANTHROPIC_API_KEY")) and not self.mock
 
-    def chat_reply(self, message: str) -> str:
+    def chat_reply(self, message: str, chat_id: str = "default") -> str:
+        """One turn in the per-tab chat session `chat_id`. Sessions are
+        capped in length (reset to continue) and in count (oldest tab's
+        history is dropped first)."""
         from .agent import Agent
         from .console import Console
-        with self.lock:
+        if not _CHAT_ID.match(chat_id or ""):
+            raise ToolError("Bad chat id.")
+        with self._chat_lock:
+            msgs = self._chats.get(chat_id)
+            if msgs is not None and len(msgs) >= CHAT_MESSAGE_CAP:
+                raise ToolError("This chat hit its length cap — reset it "
+                                "(the ↺ in the dock) to keep talking.")
             if self._agent is None:  # same loop as the terminal, silenced
                 self._agent = Agent(self.home, console=Console(enabled=False))
-            if not self._chat:
+            if msgs is None:
+                if len(self._chats) >= CHAT_SESSION_CAP:
+                    self._chats.pop(next(iter(self._chats)))
+                msgs = self._chats[chat_id] = []
                 message = f"(new session — orient first)\n{message}"
-            self._chat.append({"role": "user", "content": message})
-            return self._agent.turn(self._chat)
+            msgs.append({"role": "user", "content": message})
+            return self._agent.turn(msgs)
+
+    def chat_reset(self, chat_id: str = "default") -> dict:
+        if not _CHAT_ID.match(chat_id or ""):
+            raise ToolError("Bad chat id.")
+        with self._chat_lock:
+            self._chats.pop(chat_id, None)
+        return {"ok": True}
 
     # ------------------------------------------------------------ helpers
 
@@ -922,6 +1105,7 @@ def _split_frontmatter(text: str) -> tuple[str, str]:
 _ROUTES = [
     ("GET", re.compile(r"^/$"), "dashboard"),
     ("GET", re.compile(r"^/knowledge$"), "knowledge_page"),
+    ("GET", re.compile(r"^/status/([A-Za-z0-9_-]{1,64})$"), "status"),
     ("GET", re.compile(r"^/course/([A-Za-z0-9._-]+)$"), "course_page"),
     ("GET", re.compile(r"^/course/([A-Za-z0-9._-]+)/lesson/"
                        r"([A-Za-z0-9._-]+)$"), "lesson_page"),
@@ -930,7 +1114,53 @@ _ROUTES = [
     ("GET", re.compile(r"^/course/([A-Za-z0-9._-]+)/doc$"), "doc_page"),
     ("POST", re.compile(r"^/learn$"), "learn"),
     ("POST", re.compile(r"^/chat$"), "chat"),
+    ("POST", re.compile(r"^/chat/reset$"), "chat_reset"),
 ]
+
+# Routes whose clients speak JSON — errors go back as JSON, never as an
+# HTML page a fetch() would choke on ("connection lost" was a lie).
+_JSON_ACTIONS = {"learn", "chat", "chat_reset", "status"}
+_ALLOWED_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
+
+
+def _host_ok(host: str) -> bool:
+    """Host-header allowlist — the DNS-rebinding defense. Binding
+    127.0.0.1 does not stop a hostile page resolving its own domain to
+    127.0.0.1; only rejecting foreign Host values does."""
+    host = (host or "").strip().lower()
+    if not host:
+        return False
+    if host.startswith("["):                # [::1] or [::1]:port
+        host = host.partition("]")[0].lstrip("[")
+    elif host.count(":") == 1:              # name:port
+        host = host.rsplit(":", 1)[0]
+    return host in _ALLOWED_HOSTNAMES
+
+
+def _origin_ok(origin: str) -> bool:
+    """A present Origin must be this server. Absent Origin passes — the
+    request already carried a valid token or cookie to get this far, and
+    browsers always send Origin on cross-origin POSTs."""
+    try:
+        p = urlparse(origin)
+    except ValueError:
+        return False
+    return (p.scheme in ("http", "https")
+            and (p.hostname or "").lower() in _ALLOWED_HOSTNAMES)
+
+
+def _json_body(body: bytes) -> dict:
+    try:
+        data = json.loads(body.decode() or "{}")
+    except (UnicodeDecodeError, ValueError):
+        raise ToolError("The request body must be JSON.")
+    if not isinstance(data, dict):
+        raise ToolError("The request body must be a JSON object.")
+    return data
+
+
+class _BodyTooLarge(Exception):
+    pass
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -944,85 +1174,167 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _route(self, method: str) -> None:
         app: WebApp = self.server.app  # type: ignore[attr-defined]
+        self._set_cookie = None
         url = urlparse(self.path)
-        for verb, pat, action in _ROUTES:
-            m = pat.match(url.path)
-            if verb != method or not m:
-                continue
-            try:
-                if action == "submit":
-                    form = parse_qs(self._body().decode())
-                    return self._html(app.submit(*m.groups(), form))
-                if action == "learn":
-                    payload = json.loads(self._body() or b"{}")
-                    return self._json(200, app.learn(payload))
-                if action == "chat":
-                    if not app.chat_enabled():
-                        return self._json(503, {"error": "chat needs "
-                                                "ANTHROPIC_API_KEY"})
-                    msg = json.loads(self._body()).get("message", "")
-                    return self._json(200, {"reply": app.chat_reply(msg)})
-                if action == "doc_page":
-                    rel = parse_qs(url.query).get("p", [""])[0]
-                    return self._html(app.doc_page(m.group(1), rel))
-                return self._html(getattr(app, action)(*m.groups()))
-            except ToolError as e:
-                if action == "learn":
-                    return self._json(400, {"error": str(e)})
-                return self._html(app.page("Not found",
-                                           f"<h1>Hmm.</h1><p>{html.escape(str(e))}"
-                                           f"</p><p><a href='/'>Journey</a></p>"),
-                                  status=404)
-            except Exception as e:  # a page bug should render, not hang
-                if action == "learn":
-                    return self._json(500, {"error": str(e)})
-                return self._html(app.page("Error",
-                                           f"<h1>Something broke.</h1>"
-                                           f"<pre>{html.escape(str(e))}</pre>"),
-                                  status=500)
-        self._html(app.page("Not found", "<h1>No such page.</h1>"
-                            "<p><a href='/'>Back to the journey</a></p>"),
-                   status=404)
+        query = parse_qs(url.query)
 
-    def _body(self) -> bytes:
-        return self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        action, m = None, None
+        for verb, pat, act in _ROUTES:
+            mm = pat.match(url.path)
+            if mm and verb == method:
+                action, m = act, mm
+                break
+        as_json = action in _JSON_ACTIONS
+
+        # Order matters: Host first (rebinding), then token-or-cookie,
+        # then Origin (cross-site forgery), then CSRF inside form routes.
+        if not _host_ok(self.headers.get("Host", "")):
+            return self._deny(403, "Refused: unexpected Host header.", as_json)
+
+        if app.token_ok(query.get("token", [""])[0]):
+            # a valid token exchanges for the session cookie
+            self._set_cookie = app.session_cookie()
+        elif not app.cookie_ok(self.headers.get("Cookie", "")):
+            return self._deny(403, "Authentication required — open the "
+                                   "tokenized URL printed in the terminal.",
+                              as_json)
+
+        if method == "POST":
+            origin = self.headers.get("Origin")
+            if origin and not _origin_ok(origin):
+                return self._deny(403, "Cross-origin request refused.",
+                                  as_json)
+
+        if action is None:
+            return self._html(app.page("Not found", "<h1>No such page.</h1>"
+                              "<p><a href='/'>Back to the journey</a></p>"),
+                              status=404)
+
+        try:
+            body = self._body(app.max_body)
+        except _BodyTooLarge:
+            return self._deny(413, "Request body too large.", as_json)
+        except ValueError:
+            return self._deny(400, "Malformed request.", as_json)
+
+        try:
+            if action == "submit":
+                form = parse_qs(body.decode(errors="replace"))
+                if not app.csrf_ok(form.get("csrf", [""])[0]):
+                    return self._deny(403, "Missing or stale form token — "
+                                           "reload the page and resubmit.",
+                                      False)
+                return self._html(app.submit(*m.groups(), form))
+            if action == "learn":
+                return self._json(200, app.learn(_json_body(body)))
+            if action == "status":
+                return self._json(200, app.job_status(m.group(1)))
+            if action == "chat":
+                if not app.chat_enabled():
+                    return self._json(503, {"error": "chat needs "
+                                            "ANTHROPIC_API_KEY"})
+                payload = _json_body(body)
+                reply = app.chat_reply(str(payload.get("message") or ""),
+                                       str(payload.get("chat") or "default"))
+                return self._json(200, {"reply": reply})
+            if action == "chat_reset":
+                payload = _json_body(body)
+                return self._json(200, app.chat_reset(
+                    str(payload.get("chat") or "default")))
+            if action == "doc_page":
+                rel = query.get("p", [""])[0]
+                return self._html(app.doc_page(m.group(1), rel))
+            return self._html(getattr(app, action)(*m.groups()))
+        except ToolError as e:
+            if as_json:
+                return self._json(404 if action == "status" else 400,
+                                  {"error": str(e)})
+            return self._html(app.page("Not found",
+                                       f"<h1>Hmm.</h1><p>{html.escape(str(e))}"
+                                       f"</p><p><a href='/'>Journey</a></p>"),
+                              status=400 if action == "submit" else 404)
+        except Exception:  # a page bug renders generically; details stay
+            traceback.print_exc(file=sys.stderr)  # server-side only
+            if as_json:
+                return self._json(500, {"error": "Something broke on the "
+                                        "server — its terminal has the "
+                                        "details."})
+            return self._html(app.page("Error", "<h1>Something broke.</h1>"
+                              "<p>The server hit an internal error; the "
+                              "terminal it runs in has the details.</p>"),
+                              status=500)
+
+    def _deny(self, status: int, message: str, as_json: bool) -> None:
+        if as_json:
+            return self._json(status, {"error": message})
+        app: WebApp = self.server.app  # type: ignore[attr-defined]
+        return self._html(app.page("Refused",
+                                   f"<h1>Refused.</h1>"
+                                   f"<p>{html.escape(message)}</p>"),
+                          status=status)
+
+    def _body(self, cap: int) -> bytes:
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length < 0:
+            raise ValueError("negative Content-Length")
+        if length > cap:
+            raise _BodyTooLarge
+        return self.rfile.read(length)
+
+    def _send(self, status: int, ctype: str, data: bytes) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'; "
+            "script-src 'unsafe-inline'; img-src 'self' data:; "
+            "connect-src 'self'; form-action 'self'; base-uri 'none'; "
+            "frame-ancestors 'none'")
+        if getattr(self, "_set_cookie", None):
+            self.send_header("Set-Cookie", self._set_cookie)
+        self.end_headers()
+        self.wfile.write(data)
 
     def _html(self, text: str, status: int = 200) -> None:
-        data = text.encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        self._send(status, "text/html; charset=utf-8", text.encode())
 
     def _json(self, status: int, obj: dict) -> None:
-        data = json.dumps(obj).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        self._send(status, "application/json", json.dumps(obj).encode())
 
     def log_message(self, fmt, *args):  # quiet: one line per request on stderr
-        import sys
         print(f"[sylabis.web] {self.address_string()} {fmt % args}",
               file=sys.stderr)
 
 
-def make_server(home_dir: Path, port: int = 8787,
-                mock: bool = False) -> ThreadingHTTPServer:
+def make_server(home_dir: Path, port: int = 8787, mock: bool = False,
+                token: str | None = None) -> ThreadingHTTPServer:
+    """token=None generates a fresh one; passing it is the test hook
+    (or read server.app.token / server.app.csrf after construction)."""
     server = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
-    server.app = WebApp(home_dir, mock=mock)  # type: ignore[attr-defined]
+    server.app = WebApp(home_dir, mock=mock, token=token)  # type: ignore[attr-defined]
     return server
 
 
 def serve(home_dir: Path, port: int = 8787, mock: bool = False) -> None:
     server = make_server(home_dir, port=port, mock=mock)
+    app: WebApp = server.app  # type: ignore[attr-defined]
     host, actual_port = server.server_address[:2]
-    url = f"http://{host}:{actual_port}/"
-    print(f"sylabis — your reading room at {url}  (Ctrl-C to stop)")
-    if not server.app.chat_enabled():  # type: ignore[attr-defined]
+    url = f"http://{host}:{actual_port}/?token={app.token}"
+    print("sylabis — your reading room is at  (Ctrl-C to stop)")
+    print(f"  {url}")
+    print("  (the ?token=… is this session's key; your browser trades it "
+          "for a cookie)")
+    if not app.chat_enabled():
         print("  (Sy is off — set ANTHROPIC_API_KEY to turn the guide on)")
+    if not os.environ.get("SYLABIS_NO_BROWSER"):
+        try:
+            import webbrowser
+            threading.Timer(0.3, webbrowser.open, args=(url,)).start()
+        except Exception:
+            pass
     try:
         server.serve_forever()
     except KeyboardInterrupt:

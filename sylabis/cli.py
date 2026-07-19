@@ -18,23 +18,44 @@ work is on disk. `compile` and `grade` remain as plumbing for scripts
 and the bundled GitHub workflow.
 """
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
 
 import yaml
 
-from . import journey
+from . import __version__, journey, sandbox
 from .compiler import compile_course
-from .grader import grade as run_grade
+from .errors import SylabisError
+from .grader import grade as run_grade, path_engine_view
 from .llm import LLM
 from .path_engine import decide, actuate
 
 
-def main():
+def main(argv: list[str] | None = None):
+    """Entry point for `sy`/`sylabis`: parse, dispatch, and turn any
+    deliberate library error (SylabisError) into a clean one-line
+    message and exit code 1 — never a traceback."""
+    try:
+        _main(argv)
+    except SylabisError as e:
+        sys.exit(f"sylabis: {e}")
+
+
+def mcp_main():
+    """Entry point for `sylabis-mcp`: the MCP stdio server, so client
+    configs can say {"command": "uvx", "args": ["--from", "sylabis",
+    "sylabis-mcp"]}. Forwards its own args to `serve`."""
+    main(["serve", *sys.argv[1:]])
+
+
+def _main(argv: list[str] | None = None):
     p = argparse.ArgumentParser(
         prog=os.path.basename(sys.argv[0] or "") or "sy",
         description="The learning agent. Run with no arguments to talk.")
+    p.add_argument("--version", action="version",
+                   version=f"sylabis {__version__}")
     sub = p.add_subparsers(dest="cmd")
 
     def home_flag(sp):
@@ -61,9 +82,16 @@ def main():
     su.add_argument("--hours", type=float, default=None,
                     help="hours you actually spent")
     su.add_argument("--mock", action="store_true")
+    su.add_argument("--unsandboxed", action="store_true",
+                    help="run bundle rubric scripts without bwrap/nsjail "
+                         "(prints a warning naming the bundle's origin)")
     home_flag(su)
 
     j = sub.add_parser("journey", help="progress + the knowledge map")
+    j.add_argument("--publish", metavar="DIR", default=None,
+                   help="emit a scrubbed public journey page (knowledge.md "
+                        "+ index.html) into DIR — concepts and grades only, "
+                        "never artifact or reflection text")
     home_flag(j)
 
     w = sub.add_parser("web", help="the journey in your browser")
@@ -73,12 +101,51 @@ def main():
 
     at = sub.add_parser("attach", help="connect a course that lives in "
                                        "another repo or directory")
-    at.add_argument("source", help="git URL (clones) or local path (links)")
+    at.add_argument("source", help="git URL (clones) or local path (copies)")
     home_flag(at)
+
+    pub = sub.add_parser("publish",
+                         help="scrub a course into a shareable template")
+    pub.add_argument("course",
+                     help="course name in the journey, or a path to a bundle")
+    pub.add_argument("--to", dest="dest", required=True,
+                     help="output directory for the template")
+    pub.add_argument("--author", default="",
+                     help="author handle recorded in the publish manifest")
+    pub.add_argument("--license", default="CC-BY-4.0",
+                     help="SPDX license id (mandatory; default CC-BY-4.0)")
+    pub.add_argument("--list", action="store_true",
+                     help="after publishing, print a ready-to-paste registry "
+                          "listing entry plus the manual listing-PR steps")
+    home_flag(pub)
+
+    pa = sub.add_parser("paths", help="the community registry of published "
+                                      "paths (cloning is free and anonymous)")
+    pa_sub = pa.add_subparsers(dest="paths_cmd", required=True)
+
+    def registry_flag(sp):
+        sp.add_argument("--registry", default=None,
+                        help="registry index URL or path (default "
+                             "$SYLABIS_REGISTRY_URL or the public index)")
+
+    ps = pa_sub.add_parser("search", help="search the registry index")
+    ps.add_argument("query", nargs="?", default="",
+                    help="matched against listing name/topic/tags "
+                         "(empty lists everything)")
+    registry_flag(ps)
+    home_flag(ps)
+
+    pg = pa_sub.add_parser("get", help="attach a listed path at its "
+                                       "pinned commit")
+    pg.add_argument("id", help="listing id, e.g. author/some-path")
+    registry_flag(pg)
+    home_flag(pg)
 
     s = sub.add_parser("serve", help="MCP stdio server (journey-wide "
                                      "without a course dir)")
     s.add_argument("course_dir", nargs="?", default=None)
+    s.add_argument("--mock", action="store_true",
+                   help="serve fixture model responses (offline testing)")
     home_flag(s)
 
     # ---- plumbing: kept for scripts and the bundled grade workflow ----
@@ -96,16 +163,33 @@ def main():
     g.add_argument("--hours-actual", type=float, default=None)
     g.add_argument("--skip-tier3", action="store_true",
                    help="skip exemplar-calibrated Tier 3 scoring")
+    g.add_argument("--unsandboxed", action="store_true",
+                   help="run bundle rubric scripts without bwrap/nsjail "
+                        "(prints a warning naming the bundle's origin)")
     g.add_argument("--mock", action="store_true")
 
-    args = p.parse_args()
+    args = p.parse_args(argv)
+
+    # Courtesy update notice: interactive commands only. Never for
+    # `serve` (stdout is MCP protocol) and never in --mock runs; the
+    # module itself additionally honors SYLABIS_NO_UPDATE_CHECK /
+    # DO_NOT_TRACK / CI and only speaks to an interactive terminal.
+    if args.cmd != "serve" and not getattr(args, "mock", False):
+        from . import update_check
+        update_check.maybe_notify(journey.home(getattr(args, "home", None)))
 
     if args.cmd is None:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             sys.exit("sylabis talks through Claude: set ANTHROPIC_API_KEY "
                      "(or put it in .env), then run `sylabis` again.")
-        from .agent import Agent  # lazy: the SDK client only for talking
-        Agent(journey.home()).run()
+        from .tui import tui_available, run_tui  # lazy: textual is optional
+        if (tui_available() and sys.stdout.isatty() and sys.stdin.isatty()
+                and os.environ.get("TERM") != "dumb"
+                and not os.environ.get("SYLABIS_NO_TUI")):
+            run_tui(journey.home())
+        else:
+            from .agent import Agent  # lazy: the SDK client only for talking
+            Agent(journey.home()).run()
 
     elif args.cmd == "learn":
         home = journey.home(args.home)
@@ -139,6 +223,12 @@ def main():
 
     elif args.cmd == "journey":
         home = journey.home(args.home)
+        if args.publish:
+            dest = journey.publish_page(home, Path(args.publish))
+            print(f"Journey page published: {dest}")
+            print("Scrubbed: concepts and grades only — no artifact or "
+                  "reflection text, no learner profile, no local paths.")
+            return
         steps = journey.next_steps(home)
         if not steps:
             print('Nothing here yet. Start with: sylabis learn "a topic"')
@@ -166,10 +256,40 @@ def main():
         print(f"Attached {dest.name!r} to the journey.")
         _print_step(journey.course_next(dest))
 
+    elif args.cmd == "publish":
+        from .publish import publish_course  # lazy: only the scrubber needs it
+        src = Path(args.course).expanduser()
+        if not (src / "course.yaml").exists():
+            src = journey.course_dir(journey.home(args.home), args.course)
+        out = publish_course(src, Path(args.dest), author=args.author,
+                             license=args.license)
+        print(f"Published template: {out}")
+        if args.list:
+            _print_listing_entry(src, out)
+
+    elif args.cmd == "paths":
+        from . import registry  # lazy: only the registry commands need it
+        home = journey.home(args.home)
+        if args.paths_cmd == "search":
+            hits = registry.search(home, args.query, url=args.registry)
+            if not hits:
+                print("No matching paths. Publish one: sylabis publish "
+                      "<course> --to <dir> --list")
+                return
+            for e in hits:
+                _print_listing(e)
+        else:  # get
+            dest = registry.get(home, args.id, url=args.registry)
+            journey.emit_map(home)
+            info = journey.attach_info(dest) or {}
+            print(f"Attached {dest.name!r} at pinned commit "
+                  f"{(info.get('commit') or '?')[:12]}.")
+            _print_step(journey.course_next(dest))
+
     elif args.cmd == "serve":
         from .mcp_server import MCPServer  # lazy: stdio server pulls no deps
         MCPServer(Path(args.course_dir) if args.course_dir else None,
-                  home_dir=args.home).run()
+                  mock=args.mock, home_dir=args.home).run()
 
     elif args.cmd == "compile":
         profile = {"weekly_hours": args.hours, "hardware": args.hardware,
@@ -181,7 +301,8 @@ def main():
         result = _grade_and_adapt(Path(args.course_dir), args.milestone_id,
                                   LLM(mock=args.mock),
                                   hours_actual=args.hours_actual,
-                                  skip_tier3=args.skip_tier3)
+                                  skip_tier3=args.skip_tier3,
+                                  unsandboxed=args.unsandboxed)
         sys.exit(0 if result["passed"] else 1)
 
 
@@ -197,6 +318,57 @@ def _print_step(step: dict, base: Path | None = None) -> None:
         print(f"{label}: {step['milestone_id']} — {step['title']} "
               f"(~{step['estimated_hours']}h)")
         print(f"  Read: {base / step['milestone_id'] / 'LESSON.md'}")
+
+
+def _print_listing(e: dict) -> None:
+    """One registry search hit, human-readable."""
+    hours = e.get("est_hours")
+    bits = [f"~{hours}h" if hours else None,
+            e.get("license"), f"by {e.get('author', '?')}"]
+    print(f"{e.get('id', '?')} — {e.get('name', '?')} "
+          f"({', '.join(b for b in bits if b)})")
+    if e.get("topic"):
+        print(f"  topic: {e['topic']}")
+    tags = e.get("assumed_knowledge") or []
+    if tags:
+        print(f"  assumes: {', '.join(str(t) for t in tags)}")
+    verified = e.get("verified") or {}
+    if verified.get("verified_at"):
+        print(f"  verified: {verified['verified_at']} "
+              f"(sylabis {verified.get('sylabis_version', '?')})")
+    if e.get("derived_from"):
+        print(f"  derived from: {e['derived_from']}")
+    print(f"  get it: sylabis paths get {e.get('id', '?')}")
+
+
+def _print_listing_entry(src: Path, template: Path) -> None:
+    """`sy publish --list`: the ready-to-paste paths.json entry plus the
+    manual listing-PR steps. Computing the pinned commit_sha is the
+    author's step (it exists only after the push); nothing here shells
+    out to gh or the network."""
+    from . import registry
+    info = journey.attach_info(src)
+    entry = registry.listing_entry(
+        template, derived_from=(info or {}).get("source"))
+    slug = journey.slugify(entry["name"])
+    print("\nRegistry listing entry (paste into paths.json):\n")
+    print(json.dumps(entry, indent=2))
+    print(f"""
+To list this path (all manual — no gh needed):
+  1. Create a public repo named {registry.REPO_PREFIX}{slug} and push
+     the template:
+       cd {template}
+       git init && git add -A && git commit -m "publish {entry['name']}"
+       git remote add origin <your repo url> && git push -u origin main
+  2. Pin the commit:  git rev-parse HEAD
+     and put the 40-char sha in "commit_sha" above.
+  3. Fork the sylabis-registry repo, add the entry to paths.json, and
+     open a pull request. Registry CI re-verifies the bundle at the
+     pinned sha and sets the "verified" badge fields when green.
+
+Listing unlocks your public journey page, the verified badge,
+attribution (derived_from), and ranking — cloning stays free and
+anonymous for everyone.""")
 
 
 def _submit(args) -> None:
@@ -224,10 +396,38 @@ def _submit(args) -> None:
         sys.exit(1)
     step = ready[0]
     cdir = journey.course_dir(home, step["course"])
-    result = _grade_and_adapt(cdir, step["milestone_id"], LLM(mock=args.mock),
-                              hours_actual=args.hours)
+    grade_kw = {"hours_actual": args.hours,
+                "unsandboxed": getattr(args, "unsandboxed", False)}
+    try:
+        result = _grade_and_adapt(cdir, step["milestone_id"],
+                                  LLM(mock=args.mock), **grade_kw)
+    except sandbox.ConsentRequired as e:
+        # First grade of an attached bundle that declares rubric scripts:
+        # list them, ask once, record the decision per bundle. On a
+        # non-interactive stdin the typed error propagates instead of
+        # hanging (main() renders it) — nothing was executed.
+        if not _confirm_consent(e):
+            raise
+        sandbox.record_trust(cdir, e.source, e.scripts)
+        result = _grade_and_adapt(cdir, step["milestone_id"],
+                                  LLM(mock=args.mock), **grade_kw)
     journey.emit_map(home)
     sys.exit(0 if result["passed"] else 1)
+
+
+def _confirm_consent(e: "sandbox.ConsentRequired") -> bool:
+    """Interactive consent prompt for an attached bundle's rubric
+    scripts. Returns False (never blocks) when stdin isn't a terminal."""
+    if not sys.stdin.isatty():
+        return False
+    print(f"\nThis bundle was attached from: {e.source}")
+    print("Grading will execute the rubric scripts it declares:")
+    for s in e.scripts:
+        print(f"  - {s}")
+    print("They run under bwrap/nsjail when available; otherwise directly "
+          "with a scrubbed environment (a warning will say so).")
+    answer = input("Run these scripts? [y/N] ")
+    return answer.strip().lower() in ("y", "yes")
 
 
 def _grade_and_adapt(course_dir: Path, milestone_id: str, llm: LLM,
@@ -239,7 +439,7 @@ def _grade_and_adapt(course_dir: Path, milestone_id: str, llm: LLM,
     manifest = yaml.safe_load((course_dir / "course.yaml").read_text())
     milestone = next(m for m in manifest["milestones"]
                      if m["id"] == milestone_id)
-    decisions = decide(course_dir, milestone, result)
+    decisions = decide(course_dir, milestone, path_engine_view(result))
     for d in decisions:
         print(f"\n>> {d['action']}: {d['target']}")
     for line in actuate(course_dir, decisions, llm=llm):

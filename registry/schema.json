@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sylabis-registry.github.io/sylabis-registry/schema.json",
+  "title": "sylabis registry index (paths.json)",
+  "description": "Static, serverless index of published sylabis paths. Served raw (GitHub Pages, sparse-index style); clients cache it with a daily TTL and ETag revalidation. Human-readable companion doc: docs/registry/schema.md in the sylabis repo.",
+  "type": "object",
+  "required": ["schema", "paths"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": 1 },
+    "paths": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": ["id", "name", "git_url", "commit_sha", "topic",
+                   "est_hours", "license", "author"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$",
+          "description": "Author-scoped listing id: <author-slug>/<path-slug>. The author segment must match the listing author's GitHub handle (namespace-squatting policy: first PR from the matching handle wins the namespace)."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable course title."
+        },
+        "git_url": {
+          "type": "string",
+          "pattern": "^(https://|git@|file://)",
+          "description": "Public repo hosting the published template bundle. Repo naming convention: sylabis-path-<slug> (Homebrew-tap style)."
+        },
+        "commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "description": "PINNED commit. Clients attach exactly this commit; a repo whose history no longer contains it is refused (sha mismatch)."
+        },
+        "topic": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Free-text topic line, matched by `sy paths search`."
+        },
+        "est_hours": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Total estimated hours across milestones."
+        },
+        "license": {
+          "type": "string",
+          "minLength": 1,
+          "description": "SPDX id from the bundle's publish manifest (default CC-BY-4.0). Mandatory — bundles ship source LOCATORS, never harvested source text, so the license covers the course structure and lesson text."
+        },
+        "assumed_knowledge": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Declared assumed-knowledge tags (replaces the scrubbed learner block)."
+        },
+        "author": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Author handle, credited on listings and attribution chains."
+        },
+        "verified": {
+          "type": "object",
+          "description": "Badge fields set by registry CI ONLY — never by the listing PR author. A green verify-listing run writes them; the re-verification cron refreshes them.",
+          "required": ["verified_at", "sylabis_version", "checks_passed"],
+          "additionalProperties": false,
+          "properties": {
+            "verified_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "sylabis_version": {
+              "type": "string",
+              "description": "sylabis version that ran the verification checks."
+            },
+            "checks_passed": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Which gates ran green, e.g. self_test, okf_conformance, okf_hashes, pii_scan, secret_scan, source_locators."
+            }
+          }
+        },
+        "derived_from": {
+          "type": "string",
+          "description": "Optional attribution chain: the source (listing id or git URL) this path was derived from. Surfaced on listings — attribution fuels the status-based reciprocity mechanic."
+        }
+      }
+    }
+  }
+}
